@@ -1,0 +1,88 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Poppins", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-canvas-bg: #F3F6FB;
+  --color-surface-card: #FFFFFF;
+  --color-surface-soft: #EAF2FD;
+  --color-surface-container: #e8eeff;
+  --color-surface-container-low: #f0f3ff;
+  --color-surface-container-high: #dfe8ff;
+  --color-primary: #0056ab;
+  --color-primary-container: #1b6fd1;
+  --color-on-primary: #ffffff;
+  --color-secondary: #4f5e81;
+  --color-tertiary: #005a9d;
+  --color-on-surface: #091b36;
+  --color-on-surface-variant: #414752;
+  --color-outline: #727784;
+  --color-border-hairline: #D9E0EC;
+  --color-inverse-surface: #20304c;
+  --color-success-bg: #DCFCE7;
+  --color-success-text: #16A34A;
+  --color-warning-bg: #FFF7E6;
+  --color-warning-text: #D97706;
+  --color-danger-bg: #FEE2E2;
+  --color-danger-text: #DC2626;
+
+  --color-bench-void: #0B0F17;
+  --color-bench-surface: #131B2E;
+  --color-bench-border: #2A3954;
+  --color-bench-voltage: #06B6D4;
+  --color-bench-current: #F59E0B;
+  --color-bench-power: #10B981;
+}
+
+@layer base {
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: "Poppins", ui-sans-serif, system-ui, sans-serif;
+    overscroll-behavior-y: contain;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom subtle scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(114, 119, 132, 0.25);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(114, 119, 132, 0.45);
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 12mm;
+  }
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+  aside,
+  header,
+  nav,
+  .no-print {
+    display: none !important;
+  }
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "MicroLab OS",
+  "description": "PWA de gestão técnica, ordens de serviço, agenda de bancada, PDV rápido, fluxo de caixa Inter e telemetria de fonte ZK-SK150C para laboratórios de microeletrônica.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
