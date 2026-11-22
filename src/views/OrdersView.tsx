@@ -45,6 +45,8 @@ import {
   formatDateBR,
   getOrderWarrantyBadge,
   isQuoteExpired,
+  planejar,
+  previsaoNova,
   resolveOrderWarrantyDays,
   resolveOrderWarrantyUntil,
   todayIsoLocal,
@@ -82,6 +84,7 @@ interface OsFormState {
   partFreight: number;
   consumables: number;
   estimatedHours: number;
+  hourlyRateOverride?: number;
   servicePrice: number;
   clientSuppliedPart: boolean;
   partPurchased: boolean;
@@ -141,8 +144,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     receiveOrderPayment,
     cancelOrderWithOptions,
     deleteOrderWithAdminPin,
+    deleteOrderDiagnosticReport,
     getVolatileSecret,
   } = useLabStore();
+
+  const [confirmDeleteReportId, setConfirmDeleteReportId] = useState<string | null>(null);
 
   const [viewTab, setViewTab] = useState<ViewTab>('Todas');
   const [search, setSearch] = useState('');
@@ -237,6 +243,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       partFreight: prefill?.partFreight ?? 0,
       consumables: prefill?.consumables ?? 2,
       estimatedHours: prefill?.estimatedHours ?? 1,
+      hourlyRateOverride: prefill?.hourlyRateOverride,
       servicePrice: prefill?.servicePrice ?? 0,
       clientSuppliedPart: false,
       partPurchased: false,
@@ -297,6 +304,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       partFreight: Number(o.partFreight) || 0,
       consumables: o.consumables !== undefined ? Number(o.consumables) : 2,
       estimatedHours: Number(o.estimatedHours) || 0,
+      hourlyRateOverride: o.snapHourlyRate,
       servicePrice: Number(o.servicePrice) || 0,
       clientSuppliedPart: Boolean(o.clientSuppliedPart),
       partPurchased: Boolean(o.partPurchased),
@@ -337,6 +345,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       partFreight: draft.partFreight ?? 0,
       consumables: draft.consumables ?? 2,
       estimatedHours: draft.estimatedHours ?? 1,
+      hourlyRateOverride: draft.hourlyRateOverride,
       servicePrice: draft.servicePrice ?? 0,
       status: draft.status || 'Aprovado',
       returnWarrantyFromId: draft.returnWarrantyFromId,
@@ -424,8 +433,12 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     }, 0);
     const taxaRate = eff.totalRetentionPct / 100;
     const marginRate = eff.profitMarginPct / 100;
+    const activeHourlyRate =
+      form.hourlyRateOverride !== undefined && Number.isFinite(form.hourlyRateOverride)
+        ? form.hourlyRateOverride
+        : eff.hourlyRate;
     const dupla = calcGanhoDupla({
-      hourlyRate: eff.hourlyRate,
+      hourlyRate: activeHourlyRate,
       indirectHourlyRate: eff.indirectHourlyRate,
       taxaTotalRate: taxaRate,
       hours: form.estimatedHours,
@@ -532,6 +545,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         clientSuppliedPart: form.clientSuppliedPart,
         partPurchased: form.partPurchased,
         estimatedHours: form.estimatedHours,
+        snapHourlyRate: form.hourlyRateOverride ?? eff.hourlyRate,
         servicePrice: form.servicePrice,
         partsPrice: 0,
         extraItems: form.extraItems,
@@ -730,6 +744,28 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     : null;
 
   const diagTaxaVal = calcDiagTaxa(state.cfg);
+
+  const agendaSuggestedIso = useMemo(() => {
+    if (!form) return '';
+    if (
+      form.editingId &&
+      ['Aprovado', 'Em reparo', 'Aprovado / Fila', 'Em Reparo SMD'].includes(form.status)
+    ) {
+      const updatedOrders = state.orders.map((o) =>
+        o.id === form.editingId
+          ? {
+              ...o,
+              estimatedHours: form.estimatedHours,
+              status: form.status,
+              pedPrev: form.pedPrev,
+              pedChegou: form.pedChegou,
+            }
+          : o
+      );
+      return planejar(updatedOrders, state.cfg.horas).prev[String(form.editingId)] || '';
+    }
+    return previsaoNova(state.orders, state.cfg.horas, form.estimatedHours);
+  }, [form, state.orders, state.cfg.horas]);
 
   const clientHistoryInForm = useMemo(() => {
     if (!form?.clientId) return [];
@@ -1126,6 +1162,63 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   )}
                 </div>
 
+                {/* Evidências Fotográficas & Assinatura Digital do Check-in */}
+                {((activeOrder.evidencePhotos &&
+                  Object.values(activeOrder.evidencePhotos).some(Boolean)) ||
+                  activeOrder.signatureDataUrl) && (
+                  <div className="rounded-xl bg-[#F3F6FB] p-3.5 border border-[#D9E0EC] space-y-2.5">
+                    <div className="flex items-center justify-between text-xs font-bold text-[#091b36]">
+                      <span>Evidências &amp; Assinatura de Entrada</span>
+                      {activeOrder.signatureDataUrl && (
+                        <span className="px-2 py-0.5 rounded bg-[#DCFCE7] text-[#16A34A] text-[10px] font-bold">
+                          Assinatura digital anexada
+                        </span>
+                      )}
+                    </div>
+                    {activeOrder.evidencePhotos &&
+                      Object.values(activeOrder.evidencePhotos).some(Boolean) && (
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                          {(
+                            [
+                              ['front', 'Frontal / Display'],
+                              ['back', 'Traseira & Câmeras'],
+                              ['rails', 'Laterais & Parafusos'],
+                              ['dock', 'Conector & Lacre'],
+                            ] as const
+                          )
+                            .filter(([slot]) => Boolean(activeOrder.evidencePhotos?.[slot]))
+                            .map(([slot, label]) => (
+                              <div
+                                key={slot}
+                                className="rounded-lg bg-white border border-[#D9E0EC] p-1.5 text-center space-y-1"
+                              >
+                                <img
+                                  src={activeOrder.evidencePhotos?.[slot]}
+                                  alt={label}
+                                  className="w-full h-16 object-cover rounded border border-[#D9E0EC]"
+                                />
+                                <span className="block text-[10px] font-medium text-[#414752] truncate">
+                                  {label}
+                                </span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    {activeOrder.signatureDataUrl && (
+                      <div className="rounded-lg bg-white border border-[#D9E0EC] p-2">
+                        <span className="block text-[10px] text-[#727784] mb-1">
+                          Assinatura coletada no check-in:
+                        </span>
+                        <img
+                          src={activeOrder.signatureDataUrl}
+                          alt="Assinatura digital do cliente"
+                          className="max-h-14 w-auto object-contain"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Telemetry Card */}
                 {activeOrder.telemetry && (
                   <div className="rounded-xl bg-[#0B0F17] text-white p-3.5 border border-[#2A3954]">
@@ -1150,6 +1243,133 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       </div>
                     </div>
                     <p className="text-[11px] text-slate-300 mt-1.5">{activeOrder.telemetry.note}</p>
+                  </div>
+                )}
+
+                {/* Testes na Fonte de Bancada (testesFonte v17) */}
+                {Array.isArray(activeOrder.testesFonte) && activeOrder.testesFonte.length > 0 && (
+                  <div className="rounded-xl bg-[#0B0F17] text-white p-3.5 border border-[#2A3954] space-y-2">
+                    <div className="flex items-center justify-between text-[11px] text-[#06B6D4] font-semibold">
+                      <span className="inline-flex items-center gap-1">
+                        <Zap className="w-3.5 h-3.5" /> Testes na Fonte de Bancada ({activeOrder.testesFonte.length})
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {activeOrder.testesFonte.map((t) => (
+                        <div
+                          key={t.sid}
+                          className="rounded-lg bg-[#131B2E] border border-[#2A3954] p-2.5 text-[11px] space-y-1"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-1 text-slate-300">
+                            <span className="font-mono font-bold text-[#06B6D4]">{t.dt}</span>
+                            <span className="font-mono text-[10px] text-slate-400">
+                              Duração: {t.dur}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1.5 font-mono text-[10px] tabular-nums text-slate-200">
+                            <div>
+                              <span className="text-slate-400 block">Fuga</span>
+                              <strong>{t.fugaMa != null ? `${t.fugaMa} mA` : '—'}</strong>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 block">Boot</span>
+                              <strong>{t.bootA != null ? `${t.bootA} A` : '—'}</strong>
+                            </div>
+                            <div>
+                              <span className="text-slate-400 block">Pico</span>
+                              <strong>{t.ipkA != null ? `${t.ipkA} A` : '—'}</strong>
+                            </div>
+                          </div>
+                          {t.diag && (
+                            <p className="text-slate-200 leading-snug">{t.diag}</p>
+                          )}
+                          {t.nt && (
+                            <p className="text-[10px] text-slate-400 italic">Obs.: {t.nt}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Laudos do Assistente de Defeitos (laudos v17) */}
+                {Array.isArray(activeOrder.laudos) && activeOrder.laudos.length > 0 && (
+                  <div className="rounded-xl bg-[#F3F6FB] p-3.5 border border-[#D9E0EC] space-y-2">
+                    <div className="flex items-center justify-between text-[11px] text-[#091b36] font-bold">
+                      <span className="inline-flex items-center gap-1">
+                        <Wrench className="w-3.5 h-3.5 text-[#0056ab]" /> Laudos de Diagnóstico ({activeOrder.laudos.length})
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {activeOrder.laudos.map((l) => (
+                        <div
+                          key={l.id}
+                          className="rounded-lg bg-white border border-[#D9E0EC] p-2.5 text-[11px] space-y-1.5"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="font-bold text-[#091b36] truncate">{l.defeito}</p>
+                              <p className="text-[10px] text-[#727784]">{l.data}</p>
+                            </div>
+                            {confirmDeleteReportId === l.id ? (
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    deleteOrderDiagnosticReport(activeOrder.id, l.id);
+                                    setConfirmDeleteReportId(null);
+                                  }}
+                                  className="px-2 py-0.5 rounded bg-[#DC2626] text-white text-[10px] font-bold cursor-pointer"
+                                >
+                                  Confirmar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteReportId(null)}
+                                  className="px-1.5 py-0.5 rounded bg-[#F3F6FB] text-[#414752] text-[10px] cursor-pointer"
+                                >
+                                  Cancelar
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteReportId(l.id)}
+                                className="p-1 rounded text-[#727784] hover:text-[#DC2626] hover:bg-[#FEE2E2]/50 cursor-pointer shrink-0"
+                                title="Excluir laudo"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                          {l.passos && l.passos.length > 0 && (
+                            <ul className="space-y-0.5 text-[10px] text-[#414752]">
+                              {l.passos.map((et, idx) => (
+                                <li key={idx} className="flex items-start gap-1.5">
+                                  <span
+                                    className={`font-bold shrink-0 ${
+                                      et.r === 'ok'
+                                        ? 'text-[#16A34A]'
+                                        : et.r === 'falha'
+                                        ? 'text-[#DC2626]'
+                                        : 'text-[#727784]'
+                                    }`}
+                                  >
+                                    {et.r === 'ok' ? '✔' : et.r === 'falha' ? '✖' : '○'}
+                                  </span>
+                                  <span>{et.t}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {l.obs && (
+                            <p className="text-[10px] text-[#414752] bg-[#F3F6FB] rounded px-2 py-1">
+                              <strong>Obs.:</strong> {l.obs}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
 
@@ -2336,6 +2556,28 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       }
                       className="w-full rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-1.5 text-xs"
                     />
+                    {agendaSuggestedIso ? (
+                      <div className="mt-1 flex items-center justify-between gap-1 text-[10px] text-[#727784]">
+                        <span>
+                          Agenda: <strong className="text-[#091b36]">{formatDateBR(agendaSuggestedIso)}</strong>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setForm((p) =>
+                              p ? { ...p, expectedDeliveryDate: agendaSuggestedIso } : p
+                            )
+                          }
+                          className="rounded px-1.5 py-0.5 bg-[#EAF2FD] text-[#0056ab] font-semibold hover:bg-[#dbeafe] cursor-pointer"
+                        >
+                          Usar
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="block mt-1 text-[10px] text-[#727784]">
+                        Defina horas para calcular na agenda
+                      </span>
+                    )}
                   </div>
                   <div className="rounded-lg bg-[#F3F6FB] border border-[#D9E0EC] px-2.5 py-1.5">
                     <span className="block text-[10px] text-[#727784]">Total OS</span>
@@ -2839,6 +3081,40 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             </table>
           </div>
 
+          {activeOrder.evidencePhotos &&
+            (['front', 'back', 'rails', 'dock'] as const).some((slot) =>
+              Boolean(activeOrder.evidencePhotos?.[slot])
+            ) && (
+              <div className="mb-3">
+                <h3 className="text-[10px] font-bold uppercase bg-gray-100 border border-black px-2 py-1">
+                  Registro Fotográfico de Entrada (Evidências)
+                </h3>
+                <div className="grid grid-cols-4 gap-2 border-x border-b border-black p-2">
+                  {(
+                    [
+                      ['front', 'Frontal / Display'],
+                      ['back', 'Tampa Traseira & Câmeras'],
+                      ['rails', 'Laterais & Parafusos'],
+                      ['dock', 'Conector & Lacre Entrada'],
+                    ] as const
+                  ).map(([slot, label]) => {
+                    const photo = activeOrder.evidencePhotos?.[slot];
+                    if (!photo) return null;
+                    return (
+                      <div key={slot} className="border border-gray-300 p-1 text-center">
+                        <img
+                          src={photo}
+                          alt={label}
+                          className="w-full h-24 object-contain mx-auto bg-white"
+                        />
+                        <div className="text-[8px] font-semibold mt-1 text-gray-800">{label}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
           <div className="mb-3">
             <h3 className="text-[10px] font-bold uppercase bg-gray-100 border border-black px-2 py-1">
               Descrição de Serviços e Valores
@@ -2947,13 +3223,23 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-10 pt-6 text-center text-[10px]">
+          <div className="grid grid-cols-2 gap-10 pt-4 text-center text-[10px]">
             <div>
+              <div className="h-14 flex items-end justify-center mb-1">
+                {activeOrder.signatureDataUrl && (
+                  <img
+                    src={activeOrder.signatureDataUrl}
+                    alt="Assinatura do Cliente"
+                    className="max-h-14 w-auto object-contain mx-auto"
+                  />
+                )}
+              </div>
               <div className="border-t border-black pt-1 font-bold">Assinatura do Cliente</div>
               <div>{activeOrder.clientName}</div>
               <div className="text-[9px] text-gray-600 mt-1">Data: ____/____/________</div>
             </div>
             <div>
+              <div className="h-14 mb-1" />
               <div className="border-t border-black pt-1 font-bold">Assinatura do Técnico</div>
               <div>{activeOrder.technician || defaultTechName}</div>
               <div className="text-[9px] text-gray-600 mt-1">Data: ____/____/________</div>

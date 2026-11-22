@@ -5,8 +5,16 @@ export {};
 declare global {
   interface BluetoothRemoteGATTCharacteristic extends EventTarget {
     value?: DataView | null;
+    properties?: {
+      read?: boolean;
+      write?: boolean;
+      writeWithoutResponse?: boolean;
+      notify?: boolean;
+      indicate?: boolean;
+    };
     startNotifications(): Promise<BluetoothRemoteGATTCharacteristic>;
     writeValueWithoutResponse(value: BufferSource): Promise<void>;
+    writeValueWithResponse?(value: BufferSource): Promise<void>;
     writeValue?(value: BufferSource): Promise<void>;
   }
 

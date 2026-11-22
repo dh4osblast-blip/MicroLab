@@ -2,26 +2,26 @@ import React, { useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRightCircle,
-  Banknote,
   Calculator,
   Check,
   Clock,
   Copy,
+  Cpu,
+  Edit3,
   Layers,
-  PiggyBank,
   QrCode,
   RefreshCw,
+  RotateCcw,
   Sliders,
   Sparkles,
-  Wallet,
   X,
 } from 'lucide-react';
+import { MicroComplexityLevel } from '../types/lab';
 import { formatBRL, useLabStore } from '../store/useLabStore';
 import {
-  OFFICIAL_BREAK_EVEN_TARGET,
-  OFFICIAL_FIXED_COSTS,
-  OFFICIAL_PRO_LABORE,
+  DEFAULT_COMPLEXIDADES,
   SIMULATOR_SERVICE_PRESETS,
+  arredondarPreco,
   calcEffectivePricingFromConfig,
   calcGanhoDupla,
   calcServiceQuote,
@@ -30,7 +30,6 @@ import {
 } from '../utils/pricing';
 
 interface FinanceInterSimViewProps {
-  defaultFocus?: 'envelopes' | 'simulator';
   onOpenPix: (amount?: number, desc?: string) => void;
   onConvertToOs?: () => void;
 }
@@ -51,17 +50,26 @@ const normStr = (s: string) =>
     .toLowerCase();
 
 export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
-  defaultFocus = 'envelopes',
   onOpenPix,
   onConvertToOs,
 }) => {
-  const { state, isAtendente, canAccessRoute, setOsPrefillDraft } = useLabStore();
+  const { state, isAtendente, canAccessRoute, setOsPrefillDraft, updateLabConfig } = useLabStore();
+
+  const complexidades: MicroComplexityLevel[] = useMemo(
+    () =>
+      Array.isArray(state.cfg.complexidades) && state.cfg.complexidades.length > 0
+        ? state.cfg.complexidades
+        : DEFAULT_COMPLEXIDADES,
+    [state.cfg.complexidades]
+  );
 
   // Campos da simulação v17
   const [clientId, setClientId] = useState('');
   const [model, setModel] = useState('');
   const [defect, setDefect] = useState('');
   const [presetIdx, setPresetIdx] = useState(0);
+  const [complexityId, setComplexityId] = useState<string>(() => complexidades[0]?.id || 'n1');
+  const [editingComplexities, setEditingComplexities] = useState(false);
   const [hours, setHours] = useState<number>(SIMULATOR_SERVICE_PRESETS[0].horas);
   const [consumables, setConsumables] = useState<number>(SIMULATOR_SERVICE_PRESETS[0].consumiveis);
   const [partId, setPartId] = useState('');
@@ -81,6 +89,11 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
 
   // Calculadora rápida da curva contínua de peças
   const [samplePartCost, setSamplePartCost] = useState('50');
+
+  const selectedComplexity = useMemo(
+    () => complexidades.find((c) => c.id === complexityId) || complexidades[0] || DEFAULT_COMPLEXIDADES[0],
+    [complexidades, complexityId]
+  );
 
   const eff = useMemo(
     () => calcEffectivePricingFromConfig(state.cfg, state.fixos),
@@ -118,6 +131,11 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
     [simOverrides, baseParams]
   );
 
+  // Hora técnica efetiva considerando o multiplicador de complexidade microeletrônica
+  const complexityMult = Math.max(0.1, Number(selectedComplexity?.mult) || 1.0);
+  const horaBase = activeParams.hora;
+  const horaEfetiva = Math.round(horaBase * complexityMult * 100) / 100;
+
   const bp = state.budgetParams;
   const workingCapitalPct = eff.workingCapitalPct ?? bp.workingCapitalRatePct ?? 10;
   const manualPriceNum = Math.max(0, parseFloat(manualPrice) || 0);
@@ -127,7 +145,7 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
 
   const quote = calcServiceQuote({
     hours,
-    hourlyRate: activeParams.hora,
+    hourlyRate: horaEfetiva,
     indirectHourlyRate: activeParams.indireto,
     partCost,
     partFreight,
@@ -141,10 +159,10 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
     rounding: state.cfg.arred,
   });
 
-  // Paridade exata de centavos via calcGanhoDupla
+  // Paridade exata de centavos via calcGanhoDupla com hora efetiva
   const rawAppliedBeforeDiscount = manualPriceNum > 0 ? manualPriceNum : quote.suggestedPriceRounded;
   const dupla = calcGanhoDupla({
-    hourlyRate: activeParams.hora,
+    hourlyRate: horaEfetiva,
     indirectHourlyRate: activeParams.indireto,
     taxaTotalRate: (activeParams.taxaPag + activeParams.reservaGar) / 100,
     hours,
@@ -159,17 +177,28 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
   const isBelowFloor = denomOk && finalClientPrice < quote.floorPrice - 0.005;
   const lossAmount = isBelowFloor ? Math.max(0, -dupla.lu) : 0;
 
+  const selectedPreset = SIMULATOR_SERVICE_PRESETS[presetIdx] || SIMULATOR_SERVICE_PRESETS[0];
+
+  const matchedCatalogService = useMemo(
+    () =>
+      selectedPreset.catalogKeyword
+        ? state.servicos.find((s) => normStr(s.nome).includes(selectedPreset.catalogKeyword))
+        : undefined,
+    [selectedPreset.catalogKeyword, state.servicos]
+  );
+
+  // Preço Mercado recalculado em tempo real pela complexidade microeletrônica
+  const catalogMarketBase = matchedCatalogService ? Number(matchedCatalogService.mercado) || 0 : 0;
+  const marketPrice = useMemo(() => {
+    if (catalogMarketBase > 0) {
+      return arredondarPreco(catalogMarketBase * complexityMult, state.cfg.arred);
+    }
+    return arredondarPreco(quote.suggestedPriceExact * 1.25, state.cfg.arred);
+  }, [catalogMarketBase, complexityMult, quote.suggestedPriceExact, state.cfg.arred]);
+
   const sampleCostNum = Math.max(0, parseFloat(samplePartCost) || 0);
   const sampleMarginPct = margemPctPeca(sampleCostNum, state.cfg.margem);
   const sampleSellPrice = precoVendaPeca(sampleCostNum, state.cfg.margem, state.cfg.arred);
-
-  const breakEvenTarget = state.interBalances.monthlyBreakEvenTarget || OFFICIAL_BREAK_EVEN_TARGET;
-  const breakEvenPct = Math.min(
-    100,
-    Math.round((state.interBalances.currentMonthRevenue / Math.max(1, breakEvenTarget)) * 100)
-  );
-
-  const selectedPreset = SIMULATOR_SERVICE_PRESETS[presetIdx] || SIMULATOR_SERVICE_PRESETS[0];
 
   const handlePresetChange = (idx: number) => {
     setPresetIdx(idx);
@@ -185,6 +214,43 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
     const found = state.parts.find((p) => p.id === id);
     if (found) {
       setPartCost(Number(found.costPrice) || 0);
+    }
+  };
+
+  const handleUpdateComplexityItem = (
+    id: string,
+    patch: Partial<Pick<MicroComplexityLevel, 'nome' | 'mult'>>
+  ) => {
+    updateLabConfig((prevCfg) => {
+      const current =
+        Array.isArray(prevCfg.complexidades) && prevCfg.complexidades.length > 0
+          ? prevCfg.complexidades
+          : DEFAULT_COMPLEXIDADES;
+      return {
+        ...prevCfg,
+        complexidades: current.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                ...(patch.nome !== undefined ? { nome: patch.nome } : {}),
+                ...(patch.mult !== undefined
+                  ? { mult: Math.max(0.1, Math.round(patch.mult * 100) / 100) }
+                  : {}),
+              }
+            : item
+        ),
+      };
+    });
+  };
+
+  const handleRestoreDefaultComplexities = () => {
+    const restored = DEFAULT_COMPLEXIDADES.map((c) => ({ ...c }));
+    updateLabConfig((prevCfg) => ({
+      ...prevCfg,
+      complexidades: restored,
+    }));
+    if (!restored.some((c) => c.id === complexityId)) {
+      setComplexityId(restored[0].id);
     }
   };
 
@@ -217,23 +283,23 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
   };
 
   const executeConvertToOs = () => {
-    const cat = selectedPreset.catalogKeyword
-      ? state.servicos.find((s) => normStr(s.nome).includes(selectedPreset.catalogKeyword))
-      : undefined;
     const chosenPart = state.parts.find((p) => p.id === partId);
+    const compText = `${selectedComplexity.nome} (${complexityMult.toFixed(1)}x)`;
     setOsPrefillDraft({
       source: 'simulator',
       clientId: clientId || undefined,
       model: model.trim(),
       device: model.trim() || chosenPart?.compatibility || '',
       issue: defect.trim(),
-      notes: `Serviço: ${selectedPreset.nome} (orçamento rápido)`,
-      serviceCatalogId: cat?.id,
+      notes: `Serviço: ${selectedPreset.nome} · ${compText} (orçamento rápido)`,
+      serviceCatalogId: matchedCatalogService?.id,
       partId: partId || undefined,
       partCost: Math.round(partCost * 100) / 100,
       partFreight: Math.round(partFreight * 100) / 100,
       consumables,
       estimatedHours: hours,
+      hourlyRateOverride: horaEfetiva,
+      complexityLabel: compText,
       servicePrice: Math.round(finalClientPrice * 100) / 100,
       status: 'Aprovado',
     });
@@ -280,7 +346,7 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
     }
     if (!isAtendente && simDirty) {
       msgs.push(
-        'A simulação usa parâmetros temporários diferentes de Ajustes. A OS convertida usará os valores oficiais de Ajustes e o lucro dela poderá ser diferente.'
+        'A simulação usa parâmetros temporários diferentes de Ajustes. A OS convertida receberá a hora técnica efetiva aplicada, mas usará as taxas oficiais de Ajustes.'
       );
     }
     if (msgs.length > 0) {
@@ -296,156 +362,23 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
           <h1 className="text-lg sm:text-xl font-bold text-[#091b36]">
-            {defaultFocus === 'simulator' || isAtendente
-              ? 'Simulador de Orçamento & Precificação'
-              : 'Envelopes Banco Inter & Parâmetros Oficiais'}
+            Simulador de Orçamento &amp; Precificação
           </h1>
           <p className="text-xs text-[#727784]">
             {isAtendente
-              ? 'Informe o aparelho e o serviço: o app calcula o preço sugerido e monta a mensagem para o WhatsApp.'
-              : 'Espelhamento Conta Corrente × Porquinho Inter · Simulador isolado com conversão direta em OS'}
+              ? 'Informe o aparelho, o serviço e a complexidade: o app calcula o preço sugerido e monta a mensagem para o WhatsApp.'
+              : 'Simulador de balcão com complexidade microeletrônica editável e conversão direta em OS.'}
           </p>
         </div>
         {!isAtendente && (
-          <div className="inline-flex items-center gap-1.5 rounded-xl bg-[#DCFCE7] text-[#16A34A] px-3 py-1.5 text-xs font-bold self-start">
-            <Banknote className="w-4 h-4" />
-            <span>Taxa Média {baseParams.taxaPag.toFixed(1)}% (Pix / Dinheiro)</span>
+          <div className="inline-flex items-center gap-1.5 rounded-xl bg-[#EAF2FD] text-[#0056ab] px-3 py-1.5 text-xs font-bold self-start tabular-nums">
+            <Cpu className="w-4 h-4" />
+            <span>
+              Hora Efetiva: {formatBRL(horaEfetiva)}/h ({complexityMult.toFixed(1)}x)
+            </span>
           </div>
         )}
       </div>
-
-      {/* Espelhamento Banco Inter: Conta Corrente vs Porquinho Inter (oculto para Atendente) */}
-      {!isAtendente && (
-        <section className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          {/* Conta Corrente Inter */}
-          <div className="lg:col-span-6 rounded-2xl bg-gradient-to-br from-[#FF7A00] to-[#ea580c] text-white p-5 space-y-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Wallet className="w-5 h-5 text-white" />
-                <span className="text-xs font-bold uppercase tracking-wider text-orange-100">
-                  Conta Corrente Inter · Giro Operacional
-                </span>
-              </div>
-              <span className="px-2 py-0.5 rounded bg-white/20 text-[10px] font-bold">
-                Envelope 1 + Pró-labore
-              </span>
-            </div>
-
-            <div className="flex flex-wrap items-end justify-between gap-4">
-              <div>
-                <span className="text-xs text-orange-100 block">Saldo Disponível Conta Corrente</span>
-                <span className="text-2xl sm:text-3xl font-bold tabular-nums">
-                  {formatBRL(state.interBalances.operational)}
-                </span>
-              </div>
-              <div className="rounded-xl bg-white/15 px-3 py-2 text-right">
-                <span className="text-[10px] text-orange-100 block">Pró-labore Ref. Mensal</span>
-                <strong className="text-sm font-bold tabular-nums">
-                  {formatBRL(state.interBalances.proLabore || OFFICIAL_PRO_LABORE)}
-                </strong>
-              </div>
-            </div>
-
-            <p className="text-[11px] text-orange-50/90 leading-relaxed">
-              Recebe vendas e OS em Pix/Dinheiro para <strong>Envelope 1 (Reposição de Peças)</strong> e retirada mensal de{' '}
-              <strong>Pró-labore ({formatBRL(state.interBalances.proLabore || OFFICIAL_PRO_LABORE)})</strong>.
-            </p>
-
-            <div className="pt-3 border-t border-white/20 space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span>
-                  Ponto de Equilíbrio Mensal (Fixos {formatBRL(state.interBalances.fixedCosts)} + Pró-labore{' '}
-                  {formatBRL(state.interBalances.proLabore)})
-                </span>
-                <span className="font-bold tabular-nums">{breakEvenPct}% atingido</span>
-              </div>
-              <div className="h-2 rounded-full bg-white/25 overflow-hidden">
-                <div className="h-full bg-white rounded-full" style={{ width: `${breakEvenPct}%` }} />
-              </div>
-              <p className="text-[11px] text-orange-100 tabular-nums">
-                Faturado no mês: {formatBRL(state.interBalances.currentMonthRevenue)} / Ponto de Equilíbrio:{' '}
-                {formatBRL(breakEvenTarget)}
-              </p>
-            </div>
-          </div>
-
-          {/* Porquinho Inter */}
-          <div className="lg:col-span-6 rounded-2xl bg-white p-5 border border-[#D9E0EC] space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <PiggyBank className="w-5 h-5 text-[#0056ab]" />
-                <span className="text-xs font-bold uppercase tracking-wider text-[#091b36]">
-                  Porquinho Inter · Blindagem &amp; Reservas
-                </span>
-              </div>
-              <span className="text-lg font-bold text-[#0056ab] tabular-nums">
-                {formatBRL(state.interBalances.porquinhoTotal)}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div className="rounded-xl bg-[#F3F6FB] p-3.5 border border-[#D9E0EC]">
-                <span className="text-[10px] font-bold uppercase text-[#0056ab] block">
-                  Envelope 2 · Garantia ({baseParams.reservaGar}%)
-                </span>
-                <p className="text-lg font-bold text-[#091b36] tabular-nums mt-1">
-                  {formatBRL(state.interBalances.garantiaReserve)}
-                </p>
-                <span className="text-[10px] text-[#727784] block mt-0.5">
-                  Embutido no preço de venda (RMA/Retrabalho)
-                </span>
-              </div>
-
-              <div className="rounded-xl bg-[#F3F6FB] p-3.5 border border-[#D9E0EC]">
-                <span className="text-[10px] font-bold uppercase text-[#16A34A] block">
-                  Envelope 3 · Giro ({workingCapitalPct}%)
-                </span>
-                <p className="text-lg font-bold text-[#091b36] tabular-nums mt-1">
-                  {formatBRL(state.interBalances.workingCapital)}
-                </p>
-                <span className="text-[10px] text-[#727784] block mt-0.5">
-                  Separado pós-recebimento (NÃO entra no preço)
-                </span>
-              </div>
-
-              <div className="rounded-xl bg-[#F3F6FB] p-3.5 border border-[#D9E0EC]">
-                <span className="text-[10px] font-bold uppercase text-[#414752] block">
-                  Rateio Custos Fixos
-                </span>
-                <p className="text-lg font-bold text-[#091b36] tabular-nums mt-1">
-                  {formatBRL(state.interBalances.fixedCosts || OFFICIAL_FIXED_COSTS)}
-                </p>
-                <span className="text-[10px] text-[#727784] block mt-0.5">
-                  Custo indireto: {formatBRL(baseParams.indireto)}/h ({eff.metrics.billableHours}h fat.)
-                </span>
-              </div>
-            </div>
-
-            <div className="rounded-xl bg-[#EAF2FD]/70 border border-[#0056ab]/20 p-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
-              <div>
-                <span className="text-[#727784] block">Capacidade Bancada</span>
-                <strong className="text-[#091b36] tabular-nums">
-                  {eff.metrics.weeklyHours}h/sem · {eff.metrics.monthlyHours.toFixed(2)}h/mês
-                </strong>
-              </div>
-              <div>
-                <span className="text-[#727784] block">Faturável ({Math.round((state.cfg.ocup || 0.5) * 100)}%)</span>
-                <strong className="text-[#0056ab] tabular-nums">
-                  {eff.metrics.billableHours.toFixed(2)} h/mês
-                </strong>
-              </div>
-              <div>
-                <span className="text-[#727784] block">Hora Técnica Ativa</span>
-                <strong className="text-[#091b36] tabular-nums">{formatBRL(baseParams.hora)}/h</strong>
-              </div>
-              <div>
-                <span className="text-[#727784] block">Meta Lucro Serviço</span>
-                <strong className="text-[#16A34A] tabular-nums">{baseParams.margem.toFixed(1)}%</strong>
-              </div>
-            </div>
-          </div>
-        </section>
-      )}
 
       {/* Simulador de Orçamento Oficial MicroLab */}
       <section className="rounded-2xl bg-white p-5 border border-[#D9E0EC] grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -453,7 +386,7 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
           <div className="flex items-center justify-between flex-wrap gap-2">
             <div className="flex items-center gap-2">
               <Sliders className="w-4 h-4 text-[#0056ab]" />
-              <h2 className="text-sm font-bold text-[#091b36]">Simulador de Orçamento Oficial MicroLab</h2>
+              <h2 className="text-sm font-bold text-[#091b36]">Dados do Serviço a Simular</h2>
             </div>
             {!isAtendente && (
               <span className="text-[11px] font-medium text-[#727784]">
@@ -470,7 +403,9 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
               </summary>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-3">
                 <div>
-                  <label className="block text-[10px] font-semibold text-[#414752] mb-1">Hora técnica (R$/h)</label>
+                  <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                    Hora técnica base (R$/h)
+                  </label>
                   <input
                     type="number"
                     step="0.5"
@@ -541,7 +476,7 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
           {!isAtendente && simDirty && (
             <div className="rounded-xl bg-[#FFF7E6] border border-[#D97706]/35 px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-[#091b36]">
               <div>
-                <strong className="text-[#D97706]">Simulação temporária:</strong> estes parâmetros diferem de Ajustes e não foram salvos. A OS convertida usa os valores oficiais de Ajustes.
+                <strong className="text-[#D97706]">Simulação temporária:</strong> estes parâmetros diferem de Ajustes e não foram salvos.
               </div>
               <button
                 type="button"
@@ -554,11 +489,89 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
             </div>
           )}
 
-          {/* Presets rápidos de complexidade (SIMSV) */}
+          {/* Complexidade Microeletrônica Editável */}
+          <div className="rounded-xl bg-[#F3F6FB] border border-[#D9E0EC] p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <label className="text-[11px] font-bold text-[#091b36] flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5 text-[#0056ab]" />
+                <span>Complexidade Microeletrônica</span>
+              </label>
+              {!isAtendente && (
+                <button
+                  type="button"
+                  onClick={() => setEditingComplexities((v) => !v)}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#0056ab] hover:underline cursor-pointer"
+                >
+                  <Edit3 className="w-3 h-3" />
+                  <span>{editingComplexities ? 'Concluir edição' : 'Editar níveis'}</span>
+                </button>
+              )}
+            </div>
+
+            <select
+              value={selectedComplexity.id}
+              onChange={(e) => setComplexityId(e.target.value)}
+              className="w-full rounded-xl border border-[#D9E0EC] bg-white px-3 py-2 text-xs font-semibold text-[#091b36]"
+            >
+              {complexidades.map((lvl) => (
+                <option key={lvl.id} value={lvl.id}>
+                  {lvl.nome} ({Number(lvl.mult).toFixed(1)}x)
+                  {!isAtendente ? ` — ${formatBRL(horaBase * Number(lvl.mult))}/h` : ''}
+                </option>
+              ))}
+            </select>
+
+            {!isAtendente && editingComplexities && (
+              <div className="pt-2 border-t border-[#D9E0EC] space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold text-[#727784]">
+                    Alterações salvam automaticamente em Configurações e sincronizam com a nuvem.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleRestoreDefaultComplexities}
+                    className="inline-flex items-center gap-1 rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1 text-[10px] font-bold text-[#414752] hover:bg-[#EAF2FD] hover:text-[#0056ab] cursor-pointer shrink-0"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>Restaurar 4 padrões</span>
+                  </button>
+                </div>
+                <div className="space-y-1.5">
+                  {complexidades.map((lvl) => (
+                    <div key={lvl.id} className="grid grid-cols-12 gap-2 items-center">
+                      <input
+                        type="text"
+                        value={lvl.nome}
+                        onChange={(e) => handleUpdateComplexityItem(lvl.id, { nome: e.target.value })}
+                        className="col-span-9 rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs font-medium text-[#091b36]"
+                      />
+                      <div className="col-span-3 relative">
+                        <input
+                          type="number"
+                          step="0.1"
+                          min="0.1"
+                          value={lvl.mult}
+                          onChange={(e) =>
+                            handleUpdateComplexityItem(lvl.id, { mult: parseFloat(e.target.value) || 1.0 })
+                          }
+                          className="w-full rounded-lg border border-[#D9E0EC] bg-white pl-2.5 pr-6 py-1.5 text-xs font-bold tabular-nums text-[#0056ab]"
+                        />
+                        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-bold text-[#727784]">
+                          x
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Presets rápidos de serviço (SIMSV) */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-[11px] font-semibold text-[#414752] mb-1">
-                Tipo / complexidade do serviço (SIMSV)
+                Tipo de serviço (SIMSV)
               </label>
               <select
                 value={presetIdx}
@@ -798,7 +811,7 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
                     {formatBRL(finalClientPrice)}
                   </span>
                   <span className="text-[10px] text-sky-100 block mt-1">
-                    Prazo estimado: {hours.toFixed(1)}h · Garantia legal de {state.cfg.garantiaDias} dias
+                    {selectedComplexity.nome} · Prazo estimado: {hours.toFixed(1)}h · Garantia legal de {state.cfg.garantiaDias} dias
                   </span>
                 </div>
                 {isBelowFloor && (
@@ -811,19 +824,26 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
               <>
                 <div className="grid grid-cols-3 gap-2">
                   <div className="rounded-xl bg-white p-3 border border-[#D9E0EC]">
-                    <span className="text-[10px] font-semibold text-[#727784] block">PISO (EQUILÍBRIO)</span>
+                    <span className="text-[10px] font-semibold text-[#727784] block">PREÇO PISO</span>
                     <span className="text-sm font-bold text-[#414752] tabular-nums">{formatBRL(quote.floorPrice)}</span>
+                    <span className="text-[9px] text-[#727784] block mt-0.5">Equilíbrio</span>
                   </div>
                   <div className="rounded-xl bg-[#0056ab] text-white p-3">
                     <span className="text-[10px] font-semibold text-sky-200 block">
-                      {manualPriceNum > 0 || discount > 0 ? 'PRATICADO FINAL' : 'SUGERIDO ARRED.'}
+                      {manualPriceNum > 0 || discount > 0 ? 'PRATICADO FINAL' : 'PREÇO SUGERIDO'}
                     </span>
                     <span className="text-base font-bold tabular-nums">{formatBRL(finalClientPrice)}</span>
+                    <span className="text-[9px] text-sky-200 block mt-0.5 tabular-nums">
+                      Exato: {formatBRL(quote.suggestedPriceExact)}
+                    </span>
                   </div>
                   <div className="rounded-xl bg-white p-3 border border-[#D9E0EC]">
-                    <span className="text-[10px] font-semibold text-[#727784] block">SUGERIDO EXATO</span>
+                    <span className="text-[10px] font-semibold text-[#727784] block">PREÇO MERCADO</span>
                     <span className="text-sm font-bold text-[#091b36] tabular-nums">
-                      {formatBRL(quote.suggestedPriceExact)}
+                      {formatBRL(marketPrice)}
+                    </span>
+                    <span className="text-[9px] text-[#727784] block mt-0.5">
+                      {catalogMarketBase > 0 ? `Catálogo × ${complexityMult.toFixed(1)}x` : 'Ref. +25%'}
                     </span>
                   </div>
                 </div>
@@ -838,7 +858,7 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
                   <div className="flex justify-between">
                     <span className="inline-flex items-center gap-1">
                       <Clock className="w-3.5 h-3.5 text-[#0056ab]" />
-                      Mão de obra ({hours.toFixed(2)}h × {formatBRL(activeParams.hora)})
+                      Mão de obra ({hours.toFixed(2)}h × {formatBRL(horaEfetiva)})
                     </span>
                     <strong className="tabular-nums">{formatBRL(dupla.mo)}</strong>
                   </div>
@@ -918,39 +938,40 @@ export const FinanceInterSimView: React.FC<FinanceInterSimViewProps> = ({
           </div>
 
           <div className="space-y-2">
-            <div className="flex gap-2">
+            {canAccessRoute('ordens-de-servico') && (
+              <button
+                type="button"
+                onClick={handleConvertClick}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-[#0056ab] py-2.5 px-4 text-xs font-bold text-white hover:bg-[#1b6fd1] transition-colors cursor-pointer"
+              >
+                <ArrowRightCircle className="w-4 h-4" />
+                <span>Converter em OS Agora</span>
+              </button>
+            )}
+
+            <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={handleCopyClick}
-                className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#D9E0EC] bg-white py-2.5 text-xs font-semibold text-[#091b36] hover:bg-[#EAF2FD] cursor-pointer whitespace-nowrap"
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-white border border-[#D9E0EC] py-2.5 text-xs font-bold text-[#091b36] hover:bg-[#EAF2FD] cursor-pointer"
               >
                 {copiedQuote ? <Check className="w-4 h-4 text-[#16A34A]" /> : <Copy className="w-4 h-4" />}
                 <span>{copiedQuote ? 'Copiado!' : 'Copiar WhatsApp'}</span>
               </button>
               <button
                 type="button"
-                onClick={() => onOpenPix(finalClientPrice, `${selectedPreset.nome}${model ? ` - ${model}` : ''}`)}
-                className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#EAF2FD] py-2.5 text-xs font-semibold text-[#0056ab] hover:bg-[#dce9fc] cursor-pointer whitespace-nowrap"
+                onClick={() => onOpenPix(finalClientPrice, `Orçamento ${model || selectedPreset.nome}`)}
+                className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[#091b36] py-2.5 text-xs font-bold text-white hover:bg-[#14305a] cursor-pointer"
               >
                 <QrCode className="w-4 h-4" />
-                <span>Gerar PIX</span>
+                <span>Cobrar PIX</span>
               </button>
             </div>
-            {canAccessRoute('ordens-de-servico') && (
-              <button
-                type="button"
-                onClick={handleConvertClick}
-                className="w-full inline-flex items-center justify-center gap-2 rounded-xl bg-[#0056ab] py-2.5 text-xs font-bold text-white hover:bg-[#1b6fd1] cursor-pointer"
-              >
-                <ArrowRightCircle className="w-4 h-4" />
-                <span>Converter em OS Agora</span>
-              </button>
-            )}
           </div>
         </div>
       </section>
 
-      {/* Modal de confirmação in-app para prejuízo / simulação suja */}
+      {/* Modal de confirmação para prejuízo ou simulação divergente */}
       {confirmAction && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-[#091b36]/55 backdrop-blur-xs p-4"

@@ -12,8 +12,9 @@ export type RouteId =
   | 'simulador-orcamento'
   | 'fluxo-de-caixa'
   | 'gerador-pix'
-  | 'fonte-zk-sk150c'
-  | 'diagnostico'
+  | 'fonte'
+  | 'defeitos'
+  | 'bancada'
   | 'check-in-check-out'
   | 'configuracoes';
 
@@ -132,6 +133,31 @@ export interface PowerSupplyMemory {
   updatedAt?: number;
 }
 
+export interface CustomDefectItem {
+  id: string;
+  t: string;
+  p: string[];
+}
+
+export interface PowerSupplyTestEntry {
+  sid: number;
+  dt: string;
+  dur: string;
+  fugaMa: number | null;
+  bootA: number | null;
+  ipkA: number | null;
+  diag: string;
+  nt: string;
+}
+
+export interface OrderDiagnosticReport {
+  id: string;
+  data: string;
+  defeito: string;
+  passos: { t: string; r: 'pend' | 'ok' | 'falha' }[];
+  obs: string;
+}
+
 export interface DeliveryZone {
   bairro: string;
   valor: number;
@@ -158,6 +184,12 @@ export interface ManualPricingConfig {
   indireto: number;
   taxa: number;
   margem: number;
+}
+
+export interface MicroComplexityLevel {
+  id: string;
+  nome: string;
+  mult: number;
 }
 
 export interface LabConfig {
@@ -200,9 +232,10 @@ export interface LabConfig {
   termoPecaCli: string;
   catDesp: string[];
   fonteTema: string;
-  tempCal: Record<string, number>;
+  tempCal: Record<string, string>;
   pmicMin: number;
-  defeitosExtra: unknown[];
+  defeitosExtra: CustomDefectItem[];
+  complexidades: MicroComplexityLevel[];
   lastBk?: string;
   _ts?: Record<string, number>;
   updatedAt?: number;
@@ -250,6 +283,8 @@ export interface OsPrefillDraft {
   partFreight?: number;
   consumables?: number;
   estimatedHours?: number;
+  hourlyRateOverride?: number;
+  complexityLabel?: string;
   servicePrice?: number;
   status?: OrderStatus;
   returnWarrantyFromId?: number;
@@ -273,6 +308,8 @@ export interface ServiceOrder {
   checkInNotes?: string;
   notes?: string;
   evidenceCount?: number;
+  evidencePhotos?: Partial<Record<'front' | 'back' | 'rails' | 'dock', string>>;
+  signatureDataUrl?: string;
   entryChecklist?: Record<string, boolean>;
   entryChecklist7?: Record<string, 's' | 'n' | 't'>;
   triage?: OrderTriage;
@@ -286,6 +323,7 @@ export interface ServiceOrder {
   createdAt: string;
   createdDate?: string;
   estimatedHours: number;
+  ord?: number;
   serviceCatalogId?: string;
   serviceCatalogName?: string;
   partId?: string;
@@ -343,6 +381,8 @@ export interface ServiceOrder {
     chassis: string;
   };
   telemetry?: TelemetryReading;
+  testesFonte?: PowerSupplyTestEntry[];
+  laudos?: OrderDiagnosticReport[];
   updatedAt?: number;
 }
 
@@ -352,6 +392,15 @@ export interface Client {
   phone: string;
   cpf: string;
   email: string;
+  nasc?: string;
+  foto?: string;
+  ig?: string;
+  origem?: string;
+  cep?: string;
+  rua?: string;
+  num?: string;
+  ref?: string;
+  obs?: string;
   neighborhood: string;
   tag?: 'VIP' | 'Lojista' | 'Recorrente';
   ltv: number;
@@ -371,9 +420,12 @@ export interface BenchScheduleDay {
   capacityHours: number;
   items: {
     id: string;
+    orderId?: number;
     osCode: string;
     title: string;
     hours: number;
+    isContinuation?: boolean;
+    status?: OrderStatus;
     tone: 'primary' | 'voltage' | 'dark' | 'secondary';
   }[];
   updatedAt?: number;
@@ -381,12 +433,15 @@ export interface BenchScheduleDay {
 
 export interface PriorityQueueItem {
   id: string;
+  orderId?: number;
   osCode: string;
   statusLabel: string;
   benchLabel: string;
   title: string;
   promised: string;
   estimated: string;
+  queuePredictedDate?: string;
+  isLateRisk?: boolean;
   warningNote?: string;
   durationHours: number;
   updatedAt?: number;
@@ -420,6 +475,7 @@ export interface Supplier {
   rmaRate: string;
   rmaStatus: string;
   phone: string;
+  email?: string;
   updatedAt?: number;
 }
 
@@ -462,7 +518,8 @@ export interface CashTransaction {
   dateLabel: string;
   isoDate?: string;
   orderId?: number;
-  kind?: 'sinal' | 'estSinal' | 'rec' | 'dev' | 'fixo' | 'venda' | 'compra';
+  refOrderId?: number;
+  kind?: 'sinal' | 'estSinal' | 'rec' | 'dev' | 'fixo' | 'venda' | 'compra' | 'gar';
   reconciled: boolean;
   updatedAt?: number;
 }

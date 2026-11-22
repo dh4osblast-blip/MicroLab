@@ -3,14 +3,22 @@ import {
   AppUser,
   CashTransaction,
   Client,
+  CustomDefectItem,
   FixedExpenseItem,
   LabConfig,
   LabState,
+  OrderDiagnosticReport,
   OrderExtraItem,
   OrderStatus,
   OsPrefillDraft,
   PartItem,
+  PowerSupplyMemory,
+  PowerSupplyTestEntry,
+  PurchaseItem,
+  PurchaseRecord,
   RouteId,
+  SaleItem,
+  SaleRecord,
   SellerPerson,
   ServiceCatalogItem,
   ServiceOrder,
@@ -18,6 +26,7 @@ import {
   TechnicianPerson,
   TelemetryReading,
   UserRole,
+  WarrantyCase,
 } from '../types/lab';
 import {
   canRoleAccessRoute,
@@ -31,6 +40,7 @@ import {
 } from '../utils/auth';
 import {
   DEFAULT_CAT_DESP,
+  DEFAULT_COMPLEXIDADES,
   DEFAULT_FIXOS_SEED,
   DEFAULT_PARTS_CURVE,
   DEFAULT_ROUNDING,
@@ -50,10 +60,22 @@ import {
   OFFICIAL_WEEKLY_HOURS,
   OFFICIAL_WORKING_CAPITAL_PCT,
   addDiasIso,
+  arredondarPreco,
+  calcClientMetrics,
+  calcCofreReservaGarantia,
   calcDiagTaxa,
   calcEffectivePricingFromConfig,
+  calcEquilibrio90d,
+  calcFinLayers,
   calcOrderTotalAmount,
+  calcPurchaseTotalAmount,
+  calcSaleTotalAmount,
+  computePartStatus,
   createDefaultLabConfig,
+  formatDateBR,
+  getFilaOrders,
+  planejar,
+  precoVendaPeca,
   resolveOrderWarrantyDays,
   todayIsoLocal,
 } from '../utils/pricing';
@@ -110,23 +132,141 @@ const reconcileDerivedFromCfg = (state: LabState): LabState => {
   const eff = calcEffectivePricingFromConfig(cfg, state.fixos);
   const horas = Array.isArray(cfg.horas) && cfg.horas.length === 7 ? cfg.horas : [...OFFICIAL_HOURS_BY_DOW];
 
+  const todayIso = todayIsoLocal();
+  const todayDate = new Date();
+  const todayDow = todayDate.getDay();
+  const plan = planejar(state.orders, horas);
+  const fila = getFilaOrders(state.orders);
+  const orderById = new Map(state.orders.map((o) => [o.id, o]));
+  const colorIdxByOs = new Map<number, number>();
+  fila.forEach((o, k) => colorIdxByOs.set(o.id, k % 2));
+
+  // Mapa de dia da semana (0..6) -> data ISO nos próximos 7 dias a partir de hoje
+  const dowToIso = new Map<number, string>();
+  for (let k = 0; k < 7; k++) {
+    const iso = addDiasIso(todayIso, k);
+    const [y, m, dd] = iso.split('-').map(Number);
+    const dw = new Date(y, m - 1, dd).getDay();
+    dowToIso.set(dw, iso);
+  }
+
   const nextDays = state.scheduleDays.map((d) => {
     const dow = DAY_ID_TO_DOW[d.id];
     if (dow === undefined) return d;
     const cap = Math.max(0, Math.min(24, Number(horas[dow]) || 0));
+    const iso = dowToIso.get(dow);
+    const plannedDay = iso ? plan.dias.find((pd) => pd.iso === iso) : undefined;
+    const seenBefore = new Set<number>();
+    if (iso) {
+      plan.dias
+        .filter((pd) => pd.iso < iso)
+        .forEach((pd) => pd.blocos.forEach((b) => {
+          if (typeof b.osId === 'number') seenBefore.add(b.osId);
+        }));
+    }
+
+    const items = (plannedDay?.blocos || [])
+      .map((b, idx) => {
+        if (typeof b.osId !== 'number') return null;
+        const ordObj = orderById.get(b.osId);
+        if (!ordObj) return null;
+        const isCont = seenBefore.has(b.osId);
+        const tone: 'primary' | 'voltage' | 'dark' | 'secondary' =
+          ordObj.status === 'Em reparo' || ordObj.status === 'Em Reparo SMD'
+            ? 'voltage'
+            : (colorIdxByOs.get(b.osId) || 0) === 0
+            ? 'primary'
+            : 'dark';
+        return {
+          id: `pl-${iso}-${b.osId}-${idx}`,
+          orderId: b.osId,
+          osCode: ordObj.code,
+          title: `${ordObj.device}${isCont ? ' (continuação)' : ''}`,
+          hours: b.hours,
+          isContinuation: isCont,
+          status: ordObj.status,
+          tone,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => Boolean(x));
+
     return {
       ...d,
       capacityHours: cap,
       isOff: cap === 0,
+      isToday: dow === todayDow,
+      items,
+    };
+  });
+
+  const nextPriorityQueue = fila.map((o) => {
+    const predictedIso = plan.prev[String(o.id)] || '';
+    const isLateRisk = Boolean(
+      o.expectedDeliveryDate && predictedIso && predictedIso > o.expectedDeliveryDate
+    );
+    return {
+      id: `pq-${o.id}`,
+      orderId: o.id,
+      osCode: o.code,
+      statusLabel: o.status,
+      benchLabel: 'Bancada A',
+      title: `${o.device}${o.issue ? ` — ${o.issue.slice(0, 32)}` : ''}`,
+      promised: o.expectedDeliveryDate ? formatDateBR(o.expectedDeliveryDate) : 'A definir',
+      estimated:
+        Number(o.estimatedHours) > 0
+          ? `${Number(o.estimatedHours).toFixed(1)}h previstas`
+          : 'Sem tempo estimado',
+      queuePredictedDate: predictedIso,
+      isLateRisk,
+      warningNote: isLateRisk ? 'Pode atrasar em relação ao prometido' : undefined,
+      durationHours: Math.max(0, Number(o.estimatedHours) || 0),
+      updatedAt: o.updatedAt || Date.now(),
+    };
+  });
+
+  const nextClients = state.clients.map((c) => {
+    const m = calcClientMetrics(c, state.orders, state.vendas);
+    const nextVisit = m.lastActivityIso ? formatDateBR(m.lastActivityIso) : c.lastVisit;
+    if (
+      c.ltv === m.ltv &&
+      c.ordersCount === m.ordersCount &&
+      c.lastDevice === m.lastDevice &&
+      c.lastVisit === nextVisit
+    ) {
+      return c;
+    }
+    return {
+      ...c,
+      ltv: m.ltv,
+      ordersCount: m.ordersCount,
+      lastDevice: m.lastDevice,
+      lastVisit: nextVisit,
     };
   });
 
   const proLabore = Math.max(0, Number(cfg.proLabore) || 0);
   const fixedCosts = eff.fixedCosts;
 
-  return {
+  const updatedOrdersState: LabState = {
     ...state,
+    clients: nextClients,
     scheduleDays: nextDays,
+    priorityQueue: nextPriorityQueue,
+  };
+
+  // Financeiro em 3 Camadas v17 (substitui qualquer rateio automático por transação)
+  const kAll = calcFinLayers(updatedOrdersState, 'all');
+  const eq = kAll.equilibrio;
+  const cf = kAll.cofre;
+  const garantiaBal = Math.round(cf.saldo * 100) / 100;
+  const giroBal = Math.round(kAll.saldo3 * 100) / 100;
+  const porquinhoBal = Math.round((Math.max(0, garantiaBal) + Math.max(0, giroBal)) * 100) / 100;
+  const operationalBal =
+    Math.round((cf.totalCashBalance - Math.max(0, garantiaBal) - Math.max(0, giroBal)) * 100) /
+    100;
+
+  return {
+    ...updatedOrdersState,
     budgetParams: {
       baseHourlyRate: eff.hourlyRate,
       profitMarginPct: Math.round(eff.profitMarginPct * 100) / 100,
@@ -142,10 +282,14 @@ const reconcileDerivedFromCfg = (state: LabState): LabState => {
       fixedCosts,
     },
     interBalances: {
-      ...state.interBalances,
+      operational: operationalBal,
+      porquinhoTotal: porquinhoBal,
+      garantiaReserve: garantiaBal,
+      workingCapital: giroBal,
       fixedCosts,
       proLabore,
-      monthlyBreakEvenTarget: Math.round((fixedCosts + proLabore) * 100) / 100,
+      monthlyBreakEvenTarget: eq.meta,
+      currentMonthRevenue: eq.faturamento,
     },
     labProfile: {
       ...state.labProfile,
@@ -155,6 +299,57 @@ const reconcileDerivedFromCfg = (state: LabState): LabState => {
     },
   };
 };
+
+/**
+ * `lancarFixos()` v17: Lança automaticamente despesas fixas ativas cujo dia de vencimento já chegou no mês atual,
+ * usando ID determinístico `fx_<id>_<YYYY-MM>` para nunca duplicar entre aparelhos.
+ */
+function applyDueFixedExpenses(state: LabState): { state: LabState; changed: boolean } {
+  const hoje = todayIsoLocal();
+  const mes = hoje.slice(0, 7);
+  const diaHoje = Number(hoje.slice(8, 10)) || 1;
+  let changed = false;
+
+  const addedTxs: CashTransaction[] = [];
+  const nextFixos = (state.fixos || []).map((x) => {
+    const dueDay = Math.max(1, Math.min(28, Number(x.dia) || 1));
+    if (x.ativo !== false && x.ultimo !== mes && diaHoje >= dueDay) {
+      const fid = `fx_${x.id}_${mes}`;
+      const alreadyExists = (state.transactions || []).some((t) => t.id === fid) ||
+        addedTxs.some((t) => t.id === fid);
+      const wasDeleted = Boolean(state.tombstones?.transactions?.[fid]);
+      if (!alreadyExists && !wasDeleted && (Number(x.valor) || 0) > 0) {
+        addedTxs.push({
+          id: fid,
+          title: x.nome,
+          subtitle: `Despesa fixa recorrente · ${x.cat || 'Outros'}`,
+          tag: x.cat || 'Outros',
+          channel: 'Fixo',
+          type: 'out',
+          amount: Math.max(0, Number(x.valor) || 0),
+          dateLabel: formatDateBR(hoje),
+          isoDate: hoje,
+          kind: 'fixo',
+          reconciled: true,
+          updatedAt: Date.now(),
+        });
+      }
+      changed = true;
+      return { ...x, ultimo: mes, updatedAt: Date.now() };
+    }
+    return x;
+  });
+
+  if (!changed) return { state, changed: false };
+  return {
+    state: reconcileDerivedFromCfg({
+      ...state,
+      fixos: nextFixos,
+      transactions: addedTxs.length > 0 ? [...addedTxs, ...state.transactions] : state.transactions,
+    }),
+    changed: true,
+  };
+}
 
 const createInitialLabState = (): LabState => {
   const dayMap = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];
@@ -339,7 +534,18 @@ function hydrateLabState(raw: Partial<LabState> | null | undefined): LabState {
     formas: Array.isArray(rawCfg.formas) && rawCfg.formas.length > 0 ? rawCfg.formas : base.cfg.formas,
     catDesp,
     tempCal: rawCfg.tempCal && typeof rawCfg.tempCal === 'object' ? rawCfg.tempCal : {},
+    pmicMin: Number(rawCfg.pmicMin) > 0 ? Number(rawCfg.pmicMin) : 3.4,
     defeitosExtra: Array.isArray(rawCfg.defeitosExtra) ? rawCfg.defeitosExtra : [],
+    complexidades:
+      Array.isArray(rawCfg.complexidades) && rawCfg.complexidades.length > 0
+        ? rawCfg.complexidades
+            .filter((c) => c && typeof c === 'object')
+            .map((c, idx) => ({
+              id: String(c.id || `cx-${idx + 1}`),
+              nome: String(c.nome || `Nível ${idx + 1}`),
+              mult: Math.max(0.1, Number(c.mult) || 1.0),
+            }))
+        : DEFAULT_COMPLEXIDADES.map((c) => ({ ...c })),
     _ts: rawCfg._ts && typeof rawCfg._ts === 'object' ? { ...rawCfg._ts } : {},
   };
 
@@ -393,22 +599,24 @@ function loadStateForUid(uid?: string | null): LabState {
   try {
     const saved = localStorage.getItem(targetKey);
     if (saved) {
-      return hydrateLabState(JSON.parse(saved) as Partial<LabState>);
+      const hydrated = hydrateLabState(JSON.parse(saved) as Partial<LabState>);
+      return applyDueFixedExpenses(hydrated).state;
     }
     // Se unauthenticated ('local') e ainda existe a chave legada v18, migra sanitizada sem manter passcodes
     if (!uid) {
       const legacy = localStorage.getItem(LEGACY_DB_KEY);
       if (legacy) {
         const parsed = hydrateLabState(JSON.parse(legacy) as Partial<LabState>);
-        localStorage.setItem(targetKey, JSON.stringify(parsed));
+        const withFixos = applyDueFixedExpenses(parsed).state;
+        localStorage.setItem(targetKey, JSON.stringify(withFixos));
         localStorage.removeItem(LEGACY_DB_KEY);
-        return parsed;
+        return withFixos;
       }
     }
   } catch {
     // Fallback to initial state
   }
-  return createInitialLabState();
+  return applyDueFixedExpenses(createInitialLabState()).state;
 }
 
 interface LabContextValue {
@@ -464,17 +672,48 @@ interface LabContextValue {
   ) => Promise<{ ok: boolean; error?: string }>;
   attachTelemetryToOrder: (orderId: number, telemetry: TelemetryReading) => void;
   addClient: (client: Omit<Client, 'id' | 'ltv' | 'ordersCount' | 'lastVisit' | 'restrictions'>) => Client;
+  updateClient: (clientId: string, partial: Partial<Omit<Client, 'id'>>) => void;
+  deleteClient: (clientId: string) => { ok: boolean; error?: string };
   addClientNote: (clientId: string, note: string) => void;
-  reorderPriorityQueue: (index: number, direction: 'up' | 'down') => void;
-  enqueuePriorityItem: (osCode: string, title: string, hours: number) => void;
-  updateDayCapacity: (dayId: string, hours: number) => void;
+  moveOrderInQueue: (orderId: number, direction: -1 | 1) => void;
   addPart: (part: Omit<PartItem, 'id' | 'status'>) => void;
+  updatePart: (partId: string, partial: Partial<Omit<PartItem, 'id' | 'status'>>) => void;
+  deletePart: (partId: string) => void;
   adjustPartStock: (partId: string, delta: number) => void;
+  batchReadjustParts: (
+    percent: number,
+    field: 'sellPrice' | 'costPrice',
+    applyRounding?: boolean
+  ) => void;
   addSupplier: (supplier: Omit<Supplier, 'id' | 'initials' | 'rating' | 'rmaRate' | 'rmaStatus'>) => Supplier;
+  updateSupplier: (supplierId: string, partial: Partial<Omit<Supplier, 'id'>>) => void;
+  deleteSupplier: (supplierId: string) => void;
+  createPurchaseOrder: (input: { forn: string; frete: number; itens: PurchaseItem[] }) => PurchaseRecord;
+  receivePurchaseOrder: (purchaseId: string) => { ok: boolean; error?: string };
+  createPosSale: (input: {
+    cli?: string;
+    cliNome?: string;
+    vend?: string;
+    forma: string;
+    desc: number;
+    itens: SaleItem[];
+  }) => SaleRecord;
+  reversePosSale: (saleId: string) => { ok: boolean; error?: string };
   addTransaction: (tx: Omit<CashTransaction, 'id' | 'dateLabel'>) => void;
-  recordRestockOrder: (supplierName: string, itemsDesc: string, totalCost: number) => void;
+  recordWarrantyExpense: (input: {
+    isoDate: string;
+    orderId?: number;
+    description: string;
+    amount: number;
+  }) => { ok: boolean; error?: string };
+  deleteTransaction: (txId: string) => { ok: boolean; error?: string };
+  addWarrantyCase: (
+    input: Omit<WarrantyCase, 'id' | 'code' | 'openedAt'>
+  ) => WarrantyCase;
   updateWarrantyStatus: (warrantyId: string, status: 'Em Análise' | 'RMA Fornecedor' | 'Concluída') => void;
-  updateBudgetParams: (partial: Partial<LabState['budgetParams']>) => void;
+  addServiceCatalog: (input: Omit<ServiceCatalogItem, 'id'>) => ServiceCatalogItem;
+  updateServiceCatalog: (id: string, partial: Partial<Omit<ServiceCatalogItem, 'id'>>) => void;
+  deleteServiceCatalog: (id: string) => void;
   updateLabConfig: (updater: Partial<LabConfig> | ((prevCfg: LabConfig) => LabConfig)) => void;
   setWeekdayHours: (dowIndex: number, hours: number) => void;
   setWorkdaysHours: (hours: number) => void;
@@ -495,6 +734,16 @@ interface LabContextValue {
   exportBackupJson: () => string;
   importBackupJson: (jsonText: string) => { ok: boolean; error?: string };
   factoryResetLocalDb: () => void;
+  savePowerMemory: (input: { nome: string; v: number; i: number }) => PowerSupplyMemory | null;
+  deletePowerMemory: (id: string) => void;
+  upsertOrderPowerTest: (targetOrderId: number | null, testEntry: PowerSupplyTestEntry) => void;
+  addOrderDiagnosticReport: (orderId: number, report: Omit<OrderDiagnosticReport, 'id'>) => void;
+  deleteOrderDiagnosticReport: (orderId: number, reportId: string) => void;
+  addCustomDefect: (title: string, steps: string[]) => CustomDefectItem | null;
+  deleteCustomDefect: (id: string) => void;
+  setTempCalibration: (id: string, value: string) => void;
+  setPmicMinVoltage: (value: number) => void;
+  setPowerSupplyTheme: (theme: '' | 'br') => void;
 }
 
 const LabContext = createContext<LabContextValue | null>(null);
@@ -573,14 +822,24 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setPendingCount(Object.keys(res.meta.dirty).length);
       setSyncWarning(res.warning);
       if (res.changed) {
-        setState(hydrateLabState(res.state));
+        const fixedRes = applyDueFixedExpenses(hydrateLabState(res.state));
+        const now = new Date();
+        const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        setState({
+          ...fixedRes.state,
+          labProfile: { ...fixedRes.state.labProfile, lastSync: `Nuvem às ${timeStr}` },
+        });
+      } else {
+        const now = new Date();
+        const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+        setState((prev) => {
+          const fixedRes = applyDueFixedExpenses(prev);
+          return {
+            ...fixedRes.state,
+            labProfile: { ...fixedRes.state.labProfile, lastSync: `Nuvem às ${timeStr}` },
+          };
+        });
       }
-      const now = new Date();
-      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      setState((prev) => ({
-        ...prev,
-        labProfile: { ...prev.labProfile, lastSync: `Nuvem às ${timeStr}` },
-      }));
       return true;
     } catch (err) {
       setSyncError(formatFirebaseSyncError(err, currentAuth));
@@ -640,6 +899,15 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCurrentUser(null);
     }
   }, [state.users]);
+
+  // Garante lançamento automático idempotente de despesas fixas vencidas ao iniciar sessão / virar o mês
+  useEffect(() => {
+    if (!currentUser) return;
+    setState((prev) => {
+      const res = applyDueFixedExpenses(prev);
+      return res.changed ? res.state : prev;
+    });
+  }, [currentUser?.id]);
 
   // Logout automático por inatividade (cfg.idle minutos; 0 desliga; adia se modal aberto ou FONTE.busy())
   useEffect(() => {
@@ -959,54 +1227,6 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
-  const applyTransactionDelta = (
-    prev: LabState,
-    tx: CashTransaction,
-    sign: 1 | -1 = 1
-  ): LabState['interBalances'] => {
-    const garRate = (prev.budgetParams.guaranteeRatePct ?? OFFICIAL_WARRANTY_RESERVE_PCT) / 100;
-    const capRate = (prev.budgetParams.workingCapitalRatePct ?? OFFICIAL_WORKING_CAPITAL_PCT) / 100;
-    const feeRate = (prev.budgetParams.paymentFeePct ?? OFFICIAL_PAYMENT_FEE_PCT) / 100;
-
-    const netAfterFee = tx.type === 'in' ? tx.amount * (1 - feeRate) : 0;
-    const guaranteeAdd = tx.type === 'in' ? Math.round(tx.amount * garRate * 100) / 100 : 0;
-    const workingAdd = tx.type === 'in' ? Math.round(netAfterFee * capRate * 100) / 100 : 0;
-    const deltaConta = tx.type === 'in' ? netAfterFee - guaranteeAdd - workingAdd : -tx.amount;
-
-    const revDelta =
-      tx.type === 'in'
-        ? tx.amount
-        : tx.kind === 'dev' || tx.kind === 'estSinal'
-        ? -tx.amount
-        : 0;
-
-    return {
-      ...prev.interBalances,
-      operational: Math.max(
-        0,
-        Math.round((prev.interBalances.operational + sign * deltaConta) * 100) / 100
-      ),
-      garantiaReserve: Math.max(
-        0,
-        Math.round((prev.interBalances.garantiaReserve + sign * guaranteeAdd) * 100) / 100
-      ),
-      workingCapital: Math.max(
-        0,
-        Math.round((prev.interBalances.workingCapital + sign * workingAdd) * 100) / 100
-      ),
-      porquinhoTotal: Math.max(
-        0,
-        Math.round(
-          (prev.interBalances.porquinhoTotal + sign * (guaranteeAdd + workingAdd)) * 100
-        ) / 100
-      ),
-      currentMonthRevenue: Math.max(
-        0,
-        Math.round((prev.interBalances.currentMonthRevenue + sign * revDelta) * 100) / 100
-      ),
-    };
-  };
-
   const addOrder = (orderInput: Omit<ServiceOrder, 'id' | 'code' | 'createdAt'>): ServiceOrder => {
     const cleanInput = { ...(orderInput as unknown as Record<string, unknown>) };
     delete cleanInput.passcode;
@@ -1039,29 +1259,17 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       snapHourlyRate: baseData.snapHourlyRate ?? eff.hourlyRate,
       updatedAt: Date.now(),
     };
-    setState((prev) => ({
-      ...prev,
-      orders: [newOrder, ...prev.orders],
-      counters: {
-        nextOrderNumber: newId,
-        nextSaleNumber: prev.counters?.nextSaleNumber || 0,
-        nextPurchaseNumber: prev.counters?.nextPurchaseNumber || 0,
-      },
-      priorityQueue: [
-        {
-          id: `pq-${newId}`,
-          osCode: `OS #${newId}`,
-          statusLabel: newOrder.status,
-          benchLabel: 'Bancada A',
-          title: `${newOrder.device} — ${newOrder.issue.slice(0, 26)}`,
-          promised: newOrder.expectedDeliveryDate || 'A definir',
-          estimated: `${newOrder.estimatedHours.toFixed(1)}h previstas`,
-          durationHours: newOrder.estimatedHours,
-          updatedAt: Date.now(),
+    setState((prev) =>
+      reconcileDerivedFromCfg({
+        ...prev,
+        orders: [newOrder, ...prev.orders],
+        counters: {
+          nextOrderNumber: newId,
+          nextSaleNumber: prev.counters?.nextSaleNumber || 0,
+          nextPurchaseNumber: prev.counters?.nextPurchaseNumber || 0,
         },
-        ...prev.priorityQueue,
-      ],
-    }));
+      })
+    );
     scheduleCloudSync(3500);
     return newOrder;
   };
@@ -1100,6 +1308,10 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       pedChegou && data.status === 'Aguardando Peça' ? 'Aprovado' : data.status;
 
     const eff = calcEffectivePricingFromConfig(prevSnapshot.cfg, prevSnapshot.fixos);
+    const effectiveHourlyRate =
+      typeof data.snapHourlyRate === 'number' && Number.isFinite(data.snapHourlyRate) && data.snapHourlyRate >= 0
+        ? Math.round(data.snapHourlyRate * 100) / 100
+        : eff.hourlyRate;
     const sameCostInputs =
       o0 &&
       o0.snapDirectCost !== undefined &&
@@ -1107,16 +1319,17 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       (o0.partCost || 0) === partCost &&
       (o0.partFreight || 0) === partFreight &&
       (o0.consumables || 0) === consumables &&
-      (o0.estimatedHours || 0) === estimatedHours;
+      (o0.estimatedHours || 0) === estimatedHours &&
+      (o0.snapHourlyRate ?? eff.hourlyRate) === effectiveHourlyRate;
 
     const snapDirectCost = sameCostInputs
       ? o0!.snapDirectCost!
       : Math.round(
-          (partCost + partFreight + consumables + estimatedHours * (eff.hourlyRate + eff.indirectHourlyRate)) *
+          (partCost + partFreight + consumables + estimatedHours * (effectiveHourlyRate + eff.indirectHourlyRate)) *
             100
         ) / 100;
     const snapTaxRate = sameCostInputs ? o0!.snapTaxRate! : eff.totalRetentionPct / 100;
-    const snapHourlyRate = sameCostInputs ? o0!.snapHourlyRate! : eff.hourlyRate;
+    const snapHourlyRate = sameCostInputs ? o0!.snapHourlyRate! : effectiveHourlyRate;
 
     const svcName =
       prevSnapshot.servicos.find((s) => s.id === data.serviceCatalogId)?.nome ||
@@ -1241,6 +1454,13 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deliveredAt,
       warrantyDays,
       warrantyUntil,
+      evidencePhotos: data.evidencePhotos !== undefined ? data.evidencePhotos : o0?.evidencePhotos,
+      signatureDataUrl:
+        data.signatureDataUrl !== undefined ? data.signatureDataUrl : o0?.signatureDataUrl,
+      evidenceCount:
+        data.evidencePhotos !== undefined
+          ? Object.values(data.evidencePhotos).filter(Boolean).length
+          : data.evidenceCount ?? o0?.evidenceCount,
       updatedAt: Date.now(),
     };
 
@@ -1290,26 +1510,6 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             },
       };
 
-      if (!o0) {
-        nextState = {
-          ...nextState,
-          priorityQueue: [
-            {
-              id: `pq-${targetId}`,
-              osCode: `OS #${targetId}`,
-              statusLabel: savedOrder.status,
-              benchLabel: 'Bancada A',
-              title: `${savedOrder.device} — ${savedOrder.issue.slice(0, 26)}`,
-              promised: savedOrder.expectedDeliveryDate || 'A definir',
-              estimated: `${savedOrder.estimatedHours.toFixed(1)}h previstas`,
-              durationHours: savedOrder.estimatedHours,
-              updatedAt: Date.now(),
-            },
-            ...prev.priorityQueue,
-          ],
-        };
-      }
-
       if (effectiveSignalDelta !== 0) {
         const tx: CashTransaction = {
           id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
@@ -1329,11 +1529,10 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         nextState = {
           ...nextState,
           transactions: [tx, ...nextState.transactions],
-          interBalances: applyTransactionDelta(nextState, tx, 1),
         };
       }
 
-      return nextState;
+      return reconcileDerivedFromCfg(nextState);
     });
 
     scheduleCloudSync(3500);
@@ -1387,7 +1586,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ? target.warrantyUntil || addDiasIso(deliveredAt, warrantyDays ?? 90)
           : undefined;
 
-      return {
+      return reconcileDerivedFromCfg({
         ...prev,
         parts: nextParts,
         orders: prev.orders.map((o) =>
@@ -1407,26 +1606,28 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               }
             : o
         ),
-      };
+      });
     });
     scheduleCloudSync(3500);
   };
 
   const markOrderPartArrived = (orderId: number) => {
-    setState((prev) => ({
-      ...prev,
-      orders: prev.orders.map((o) => {
-        if (o.id !== orderId) return o;
-        const nextStatus: OrderStatus = o.status === 'Aguardando Peça' ? 'Aprovado' : o.status;
-        return {
-          ...o,
-          pedChegou: true,
-          status: nextStatus,
-          acceptedAt: o.acceptedAt || nowAgoraStr(),
-          updatedAt: Date.now(),
-        };
-      }),
-    }));
+    setState((prev) =>
+      reconcileDerivedFromCfg({
+        ...prev,
+        orders: prev.orders.map((o) => {
+          if (o.id !== orderId) return o;
+          const nextStatus: OrderStatus = o.status === 'Aguardando Peça' ? 'Aprovado' : o.status;
+          return {
+            ...o,
+            pedChegou: true,
+            status: nextStatus,
+            acceptedAt: o.acceptedAt || nowAgoraStr(),
+            updatedAt: Date.now(),
+          };
+        }),
+      })
+    );
     scheduleCloudSync(3000);
   };
 
@@ -1478,10 +1679,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ),
         transactions: [tx, ...prev.transactions],
       };
-      return {
-        ...nextState,
-        interBalances: applyTransactionDelta(nextState, tx, 1),
-      };
+      return reconcileDerivedFromCfg(nextState);
     });
     scheduleCloudSync(3000);
   };
@@ -1583,9 +1781,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         orders: prev.orders.map((o) => (o.id === orderId ? updated : o)),
         transactions: refundTx ? [refundTx, ...prev.transactions] : prev.transactions,
       };
-      return refundTx
-        ? { ...nextState, interBalances: applyTransactionDelta(nextState, refundTx, 1) }
-        : nextState;
+      return reconcileDerivedFromCfg(nextState);
     });
     scheduleCloudSync(3000);
   };
@@ -1625,21 +1821,12 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           .map((tx) => tx.id)
       );
 
-      let nextBalances = prev.interBalances;
-      prev.transactions.forEach((tx) => {
-        if (linkedIds.has(tx.id)) {
-          nextBalances = applyTransactionDelta({ ...prev, interBalances: nextBalances }, tx, -1);
-        }
-      });
-
-      return {
+      return reconcileDerivedFromCfg({
         ...prev,
         parts: nextParts,
         orders: prev.orders.filter((o) => o.id !== orderId),
-        priorityQueue: prev.priorityQueue.filter((pq) => pq.osCode !== `OS ${target.code}`),
         transactions: prev.transactions.filter((tx) => !linkedIds.has(tx.id)),
-        interBalances: nextBalances,
-      };
+      });
     });
     scheduleCloudSync(2500);
     return { ok: true };
@@ -1653,6 +1840,182 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ),
     }));
     scheduleCloudSync(3500);
+  };
+
+  const savePowerMemory = (input: {
+    nome: string;
+    v: number;
+    i: number;
+  }): PowerSupplyMemory | null => {
+    const cleanName = input.nome.trim().slice(0, 30);
+    const v = Math.round((Number(input.v) || 0) * 100) / 100;
+    const i = Math.round((Number(input.i) || 0) * 1000) / 1000;
+    if (!cleanName || !(v >= 0.5 && v <= 48) || !(i >= 0 && i <= 8.2)) return null;
+    const mem: PowerSupplyMemory = {
+      id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`,
+      nome: cleanName,
+      v,
+      i,
+      updatedAt: Date.now(),
+    };
+    setState((prev) => ({
+      ...prev,
+      fonteMem: [...(prev.fonteMem || []), mem],
+    }));
+    scheduleCloudSync(2500);
+    return mem;
+  };
+
+  const deletePowerMemory = (id: string) => {
+    setState((prev) => ({
+      ...prev,
+      fonteMem: (prev.fonteMem || []).filter((m) => m.id !== id),
+    }));
+    scheduleCloudSync(2500);
+  };
+
+  const upsertOrderPowerTest = (
+    targetOrderId: number | null,
+    testEntry: PowerSupplyTestEntry
+  ) => {
+    setState((prev) => {
+      const now = Date.now();
+      const nextOrders = prev.orders.map((o) => {
+        const list = Array.isArray(o.testesFonte) ? o.testesFonte : [];
+        if (targetOrderId !== null && o.id === targetOrderId) {
+          const idx = list.findIndex((t) => t.sid === testEntry.sid);
+          const nextList =
+            idx >= 0
+              ? list.map((t, i) => (i === idx ? testEntry : t))
+              : [...list, testEntry];
+          return { ...o, testesFonte: nextList, updatedAt: now };
+        }
+        const filtered = list.filter((t) => t.sid !== testEntry.sid);
+        if (filtered.length !== list.length) {
+          const updated: ServiceOrder = { ...o, updatedAt: now };
+          if (filtered.length > 0) updated.testesFonte = filtered;
+          else delete updated.testesFonte;
+          return updated;
+        }
+        return o;
+      });
+      return { ...prev, orders: nextOrders };
+    });
+    scheduleCloudSync(2500);
+  };
+
+  const addOrderDiagnosticReport = (
+    orderId: number,
+    report: Omit<OrderDiagnosticReport, 'id'>
+  ) => {
+    const newReport: OrderDiagnosticReport = {
+      ...report,
+      id: `laudo-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    };
+    setState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              laudos: [...(o.laudos || []), newReport],
+              updatedAt: Date.now(),
+            }
+          : o
+      ),
+    }));
+    scheduleCloudSync(2500);
+  };
+
+  const deleteOrderDiagnosticReport = (orderId: number, reportId: string) => {
+    setState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((o) => {
+        if (o.id !== orderId) return o;
+        const filtered = (o.laudos || []).filter((l) => l.id !== reportId);
+        return {
+          ...o,
+          laudos: filtered,
+          updatedAt: Date.now(),
+        };
+      }),
+    }));
+    scheduleCloudSync(2500);
+  };
+
+  const addCustomDefect = (title: string, steps: string[]): CustomDefectItem | null => {
+    const cleanTitle = title.trim();
+    const cleanSteps = steps.map((s) => s.trim()).filter(Boolean);
+    if (!cleanTitle || cleanSteps.length === 0) return null;
+    const item: CustomDefectItem = {
+      id: `x${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+      t: cleanTitle,
+      p: cleanSteps,
+    };
+    setState((prev) => ({
+      ...prev,
+      cfg: {
+        ...prev.cfg,
+        defeitosExtra: [...(prev.cfg.defeitosExtra || []), item],
+        _ts: { ...(prev.cfg._ts || {}), defeitosExtra: Date.now() },
+        updatedAt: Date.now(),
+      },
+    }));
+    scheduleCloudSync(2500);
+    return item;
+  };
+
+  const deleteCustomDefect = (id: string) => {
+    setState((prev) => ({
+      ...prev,
+      cfg: {
+        ...prev.cfg,
+        defeitosExtra: (prev.cfg.defeitosExtra || []).filter((d) => d.id !== id),
+        _ts: { ...(prev.cfg._ts || {}), defeitosExtra: Date.now() },
+        updatedAt: Date.now(),
+      },
+    }));
+    scheduleCloudSync(2500);
+  };
+
+  const setTempCalibration = (id: string, value: string) => {
+    setState((prev) => ({
+      ...prev,
+      cfg: {
+        ...prev.cfg,
+        tempCal: { ...(prev.cfg.tempCal || {}), [id]: value.trim() },
+        _ts: { ...(prev.cfg._ts || {}), tempCal: Date.now() },
+        updatedAt: Date.now(),
+      },
+    }));
+    scheduleCloudSync(3000);
+  };
+
+  const setPmicMinVoltage = (value: number) => {
+    const safe = Number.isFinite(value) && value > 0 ? Math.round(value * 100) / 100 : 3.4;
+    setState((prev) => ({
+      ...prev,
+      cfg: {
+        ...prev.cfg,
+        pmicMin: safe,
+        _ts: { ...(prev.cfg._ts || {}), pmicMin: Date.now() },
+        updatedAt: Date.now(),
+      },
+    }));
+    scheduleCloudSync(3000);
+  };
+
+  const setPowerSupplyTheme = (theme: '' | 'br') => {
+    setState((prev) => ({
+      ...prev,
+      cfg: {
+        ...prev.cfg,
+        fonteTema: theme,
+        _ts: { ...(prev.cfg._ts || {}), fonteTema: Date.now() },
+        updatedAt: Date.now(),
+      },
+    }));
+    scheduleCloudSync(3000);
   };
 
   const addClient = (
@@ -1675,6 +2038,50 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newClient;
   };
 
+  const updateClient = (clientId: string, partial: Partial<Omit<Client, 'id'>>) => {
+    setState((prev) =>
+      reconcileDerivedFromCfg({
+        ...prev,
+        clients: prev.clients.map((c) =>
+          c.id === clientId ? { ...c, ...partial, updatedAt: Date.now() } : c
+        ),
+      })
+    );
+    scheduleCloudSync(3500);
+  };
+
+  const deleteClient = (clientId: string): { ok: boolean; error?: string } => {
+    const target = stateRef.current.clients.find((c) => c.id === clientId);
+    if (!target) return { ok: false, error: 'Cliente não encontrado.' };
+
+    const targetNameNorm = normStr(target.name);
+    const activeOrders = stateRef.current.orders.filter(
+      (o) =>
+        o.status !== 'Entregue' &&
+        o.status !== 'Cancelado' &&
+        (o.clientId === target.id ||
+          (targetNameNorm.length > 0 && normStr(o.clientName) === targetNameNorm))
+    );
+    if (activeOrders.length > 0) {
+      return {
+        ok: false,
+        error: `Não é possível excluir: ${target.name} possui ${activeOrders.length} OS ativa(s) (${activeOrders
+          .map((o) => o.code)
+          .slice(0, 3)
+          .join(', ')}). Conclua ou cancele antes de excluir.`,
+      };
+    }
+
+    setState((prev) =>
+      reconcileDerivedFromCfg({
+        ...prev,
+        clients: prev.clients.filter((c) => c.id !== clientId),
+      })
+    );
+    scheduleCloudSync(3000);
+    return { ok: true };
+  };
+
   const addClientNote = (clientId: string, note: string) => {
     if (!note.trim()) return;
     setState((prev) => ({
@@ -1688,50 +2095,21 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     scheduleCloudSync(3500);
   };
 
-  const reorderPriorityQueue = (index: number, direction: 'up' | 'down') => {
+  const moveOrderInQueue = (orderId: number, direction: -1 | 1) => {
     setState((prev) => {
-      const next = [...prev.priorityQueue];
-      const targetIndex = direction === 'up' ? index - 1 : index + 1;
-      if (targetIndex < 0 || targetIndex >= next.length) return prev;
-      const [moved] = next.splice(index, 1);
-      next.splice(targetIndex, 0, moved);
-      return { ...prev, priorityQueue: next };
-    });
-    scheduleCloudSync(3500);
-  };
-
-  const enqueuePriorityItem = (osCode: string, title: string, hours: number) => {
-    setState((prev) => ({
-      ...prev,
-      priorityQueue: [
-        ...prev.priorityQueue,
-        {
-          id: `pq-${Date.now()}`,
-          osCode,
-          statusLabel: 'Aprovado',
-          benchLabel: 'Bancada A',
-          title,
-          promised: 'Sexta 17:00',
-          estimated: `${hours.toFixed(1)}h previstas`,
-          durationHours: hours,
-          updatedAt: Date.now(),
-        },
-      ],
-    }));
-    scheduleCloudSync(3500);
-  };
-
-  const updateDayCapacity = (dayId: string, hours: number) => {
-    const cleanHours = Math.max(0, Math.min(24, Number(hours) || 0));
-    const dow = DAY_ID_TO_DOW[dayId];
-    setState((prev) => {
-      const nextHoras = [...(prev.cfg.horas || [...OFFICIAL_HOURS_BY_DOW])];
-      if (dow !== undefined) nextHoras[dow] = cleanHours;
+      const L = getFilaOrders(prev.orders);
+      const i = L.findIndex((o) => o.id === orderId);
+      const j = i + direction;
+      if (i < 0 || j < 0 || j >= L.length) return prev;
+      const reordered = [...L];
+      [reordered[i], reordered[j]] = [reordered[j], reordered[i]];
+      const ordMap = new Map<number, number>();
+      reordered.forEach((o, k) => ordMap.set(o.id, k + 1));
+      const now = Date.now();
       return reconcileDerivedFromCfg({
         ...prev,
-        cfg: { ...prev.cfg, horas: nextHoras },
-        scheduleDays: prev.scheduleDays.map((d) =>
-          d.id === dayId ? { ...d, capacityHours: cleanHours, isOff: cleanHours === 0, updatedAt: Date.now() } : d
+        orders: prev.orders.map((o) =>
+          ordMap.has(o.id) ? { ...o, ord: ordMap.get(o.id), updatedAt: now } : o
         ),
       });
     });
@@ -1768,12 +2146,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addPart = (partInput: Omit<PartItem, 'id' | 'status'>) => {
-    const status: PartItem['status'] =
-      partInput.stock === 0
-        ? 'Esgotado'
-        : partInput.stock <= partInput.minStock
-        ? 'Alerta Reposição'
-        : 'Disponível';
+    const status = computePartStatus(partInput.stock, partInput.minStock);
     const newPart: PartItem = {
       ...partInput,
       id: `part-${Date.now()}`,
@@ -1787,19 +2160,73 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     scheduleCloudSync(3500);
   };
 
+  const updatePart = (partId: string, partial: Partial<Omit<PartItem, 'id' | 'status'>>) => {
+    setState((prev) => ({
+      ...prev,
+      parts: prev.parts.map((p) => {
+        if (p.id !== partId) return p;
+        const nextStock = partial.stock !== undefined ? Number(partial.stock) || 0 : p.stock;
+        const nextMin = partial.minStock !== undefined ? Math.max(0, Number(partial.minStock) || 0) : p.minStock;
+        return {
+          ...p,
+          ...partial,
+          stock: nextStock,
+          minStock: nextMin,
+          status: computePartStatus(nextStock, nextMin),
+          updatedAt: Date.now(),
+        };
+      }),
+    }));
+    scheduleCloudSync(3500);
+  };
+
+  const deletePart = (partId: string) => {
+    setState((prev) => ({
+      ...prev,
+      parts: prev.parts.filter((p) => p.id !== partId),
+    }));
+    scheduleCloudSync(3500);
+  };
+
   const adjustPartStock = (partId: string, delta: number) => {
     setState((prev) => ({
       ...prev,
       parts: prev.parts.map((p) => {
         if (p.id !== partId) return p;
-        const nextStock = Math.max(0, p.stock + delta);
-        const status: PartItem['status'] =
-          nextStock === 0
-            ? 'Esgotado'
-            : nextStock <= p.minStock
-            ? 'Alerta Reposição'
-            : 'Disponível';
-        return { ...p, stock: nextStock, status, updatedAt: Date.now() };
+        const nextStock = Math.max(0, Math.round((p.stock + delta) * 100) / 100);
+        return {
+          ...p,
+          stock: nextStock,
+          status: computePartStatus(nextStock, p.minStock),
+          updatedAt: Date.now(),
+        };
+      }),
+    }));
+    scheduleCloudSync(3500);
+  };
+
+  const batchReadjustParts = (
+    percent: number,
+    field: 'sellPrice' | 'costPrice',
+    applyRounding = field === 'sellPrice'
+  ) => {
+    const pct = Number(percent) || 0;
+    if (pct === 0) return;
+    const factor = 1 + pct / 100;
+    setState((prev) => ({
+      ...prev,
+      parts: prev.parts.map((p) => {
+        const curVal = Number(p[field]) || 0;
+        const raw = Math.max(0, Math.round(curVal * factor * 100) / 100);
+        const nextVal =
+          field === 'sellPrice' && applyRounding
+            ? arredondarPreco(raw, prev.cfg.arred)
+            : raw;
+        return {
+          ...p,
+          [field]: nextVal,
+          updatedAt: Date.now(),
+        };
       }),
     }));
     scheduleCloudSync(3500);
@@ -1830,83 +2257,500 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return newSup;
   };
 
-  const addTransaction = (txInput: Omit<CashTransaction, 'id' | 'dateLabel'>) => {
-    const now = new Date();
-    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    const newTx: CashTransaction = {
-      ...txInput,
-      id: `tx-${Date.now()}`,
-      dateLabel: `Hoje, ${timeStr}`,
-      updatedAt: Date.now(),
-    };
-    setState((prev) => {
-      const garRate = (prev.budgetParams.guaranteeRatePct ?? OFFICIAL_WARRANTY_RESERVE_PCT) / 100;
-      const capRate = (prev.budgetParams.workingCapitalRatePct ?? OFFICIAL_WORKING_CAPITAL_PCT) / 100;
-      const feeRate = (prev.budgetParams.paymentFeePct ?? OFFICIAL_PAYMENT_FEE_PCT) / 100;
-
-      const netAfterFee = newTx.type === 'in' ? newTx.amount * (1 - feeRate) : 0;
-      const guaranteeAdd = newTx.type === 'in' ? Math.round(newTx.amount * garRate * 100) / 100 : 0;
-      const workingAdd = newTx.type === 'in' ? Math.round(netAfterFee * capRate * 100) / 100 : 0;
-      const deltaConta = newTx.type === 'in' ? netAfterFee - guaranteeAdd - workingAdd : -newTx.amount;
-
-      return {
-        ...prev,
-        transactions: [newTx, ...prev.transactions],
-        interBalances: {
-          ...prev.interBalances,
-          operational: Math.max(0, Math.round((prev.interBalances.operational + deltaConta) * 100) / 100),
-          garantiaReserve: Math.round((prev.interBalances.garantiaReserve + guaranteeAdd) * 100) / 100,
-          workingCapital: Math.round((prev.interBalances.workingCapital + workingAdd) * 100) / 100,
-          porquinhoTotal: Math.round((prev.interBalances.porquinhoTotal + guaranteeAdd + workingAdd) * 100) / 100,
-          currentMonthRevenue:
-            newTx.type === 'in'
-              ? Math.round((prev.interBalances.currentMonthRevenue + newTx.amount) * 100) / 100
-              : prev.interBalances.currentMonthRevenue,
-        },
-      };
-    });
+  const updateSupplier = (supplierId: string, partial: Partial<Omit<Supplier, 'id'>>) => {
+    setState((prev) => ({
+      ...prev,
+      suppliers: prev.suppliers.map((s) => {
+        if (s.id !== supplierId) return s;
+        const nextName = partial.name !== undefined ? partial.name.trim() : s.name;
+        const words = nextName.split(/\s+/).filter(Boolean);
+        const initials =
+          words.length >= 2
+            ? `${words[0][0]}${words[1][0]}`.toUpperCase()
+            : nextName.slice(0, 2).toUpperCase() || s.initials;
+        return {
+          ...s,
+          ...partial,
+          name: nextName,
+          initials,
+          updatedAt: Date.now(),
+        };
+      }),
+    }));
     scheduleCloudSync(3500);
   };
 
-  const recordRestockOrder = (supplierName: string, itemsDesc: string, totalCost: number) => {
-    const nextNum = (state.counters?.nextPurchaseNumber || 0) + 1;
-    const code = `PED-${String(nextNum).padStart(4, '0')}`;
+  const deleteSupplier = (supplierId: string) => {
     setState((prev) => ({
       ...prev,
+      suppliers: prev.suppliers.filter((s) => s.id !== supplierId),
+    }));
+    scheduleCloudSync(3000);
+  };
+
+  const createPurchaseOrder = (input: {
+    forn: string;
+    frete: number;
+    itens: PurchaseItem[];
+  }): PurchaseRecord => {
+    const maxN = stateRef.current.compras.reduce((m, c) => Math.max(m, Number(c.n) || 0), 0);
+    const nextN = Math.max(maxN, stateRef.current.counters?.nextPurchaseNumber || 0) + 1;
+    const cleanItems: PurchaseItem[] = (input.itens || [])
+      .filter((x) => Boolean(x.d && x.d.trim()))
+      .map((x) => ({
+        p: x.p || undefined,
+        d: x.d.trim(),
+        q: Math.max(1, Number(x.q) || 1),
+        v: Math.max(0, Number(x.v) || 0),
+      }));
+
+    const purchase: PurchaseRecord = {
+      id: `cp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+      n: nextN,
+      data: todayIsoLocal(),
+      forn: input.forn,
+      st: 'A caminho',
+      frete: Math.max(0, Number(input.frete) || 0),
+      desc: 0,
+      itens: cleanItems,
+      updatedAt: Date.now(),
+    };
+
+    setState((prev) => ({
+      ...prev,
+      compras: [purchase, ...prev.compras],
       counters: {
         nextOrderNumber: prev.counters?.nextOrderNumber || 0,
         nextSaleNumber: prev.counters?.nextSaleNumber || 0,
-        nextPurchaseNumber: nextNum,
+        nextPurchaseNumber: nextN,
       },
-      shipments: [
-        {
-          id: `ship-${Date.now()}`,
-          trackingCode: code,
-          title: itemsDesc,
-          sender: `${supplierName} · Pedido via MicroLab OS`,
-          etaLabel: 'Postagem solicitada',
-          progressStep: 1,
-          updatedAt: Date.now(),
-        },
-        ...prev.shipments,
-      ],
-      transactions: [
-        {
-          id: `tx-${Date.now()}`,
-          title: `Pedido Reposição: ${supplierName}`,
-          subtitle: itemsDesc,
-          tag: code,
-          channel: 'Fornecedores',
-          type: 'out',
-          amount: totalCost,
-          dateLabel: 'Agora',
-          reconciled: false,
-          updatedAt: Date.now(),
-        },
-        ...prev.transactions,
-      ],
     }));
+    scheduleCloudSync(3000);
+    return purchase;
+  };
+
+  const receivePurchaseOrder = (purchaseId: string): { ok: boolean; error?: string } => {
+    const target = stateRef.current.compras.find((c) => c.id === purchaseId);
+    if (!target) return { ok: false, error: 'Pedido de compra não encontrado.' };
+    if (target.st === 'Recebido') return { ok: false, error: 'Este pedido já foi recebido.' };
+
+    const today = todayIsoLocal();
+    const timeStr = nowClockStr();
+
+    setState((prev) => {
+      const order = prev.compras.find((c) => c.id === purchaseId);
+      if (!order || order.st === 'Recebido') return prev;
+
+      const base = order.itens.reduce((a, x) => a + (Number(x.q) || 0) * (Number(x.v) || 0), 0);
+      const qt = order.itens.reduce((a, x) => a + (Number(x.q) || 0), 0);
+      const fr = Math.max(0, Number(order.frete) || 0);
+      const totalCompra = calcPurchaseTotalAmount(order);
+
+      let nextParts = [...prev.parts];
+      order.itens.forEach((x) => {
+        if (!x.p) return;
+        const idx = nextParts.findIndex((p) => p.id === x.p);
+        if (idx < 0) return;
+        const p = nextParts[idx];
+        const q = Math.max(0, Number(x.q) || 0);
+        const v = Math.max(0, Number(x.v) || 0);
+        const rt =
+          fr > 0 && q > 0
+            ? (base > 0 ? (fr * (q * v)) / base : (fr * q) / Math.max(1, qt)) / q
+            : 0;
+        const cu = v + rt;
+        const q0 = p.costPrice > 0 ? Math.max(0, Number(p.stock) || 0) : 0;
+        const autoCurveBefore = precoVendaPeca(p.costPrice, prev.cfg.margem, prev.cfg.arred);
+        const auto = !(p.sellPrice > 0) || Math.abs(p.sellPrice - autoCurveBefore) < 0.005;
+
+        const nextStock = (Number(p.stock) || 0) + q;
+        let nextCost = Number(p.costPrice) || 0;
+        let nextSell = Number(p.sellPrice) || 0;
+        if (v > 0) {
+          nextCost =
+            q0 + q > 0
+              ? Math.round(((q0 * nextCost + q * cu) / (q0 + q)) * 100) / 100
+              : Math.round(cu * 100) / 100;
+          if (auto) {
+            nextSell = precoVendaPeca(nextCost, prev.cfg.margem, prev.cfg.arred);
+          }
+        }
+
+        nextParts[idx] = {
+          ...p,
+          stock: nextStock,
+          costPrice: nextCost,
+          sellPrice: nextSell,
+          status: computePartStatus(nextStock, p.minStock),
+          updatedAt: Date.now(),
+        };
+      });
+
+      const supName =
+        prev.suppliers.find((s) => s.id === order.forn || s.name === order.forn)?.name ||
+        order.forn ||
+        'Fornecedor';
+
+      const tx: CashTransaction = {
+        id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        title: `Compra nº ${order.n}`,
+        subtitle: `${supName} · ${order.itens.length} ${order.itens.length === 1 ? 'item' : 'itens'}`,
+        tag: 'Peças',
+        channel: 'Fornecedores',
+        type: 'out',
+        amount: totalCompra,
+        dateLabel: `Hoje, ${timeStr}`,
+        isoDate: today,
+        kind: 'compra',
+        reconciled: true,
+        updatedAt: Date.now(),
+      };
+
+      const nextState: LabState = {
+        ...prev,
+        parts: nextParts,
+        compras: prev.compras.map((c) =>
+          c.id === purchaseId
+            ? { ...c, st: 'Recebido', recebido: today, updatedAt: Date.now() }
+            : c
+        ),
+        transactions: totalCompra > 0 ? [tx, ...prev.transactions] : prev.transactions,
+      };
+      return reconcileDerivedFromCfg(nextState);
+    });
+
+    scheduleCloudSync(2500);
+    return { ok: true };
+  };
+
+  const createPosSale = (input: {
+    cli?: string;
+    cliNome?: string;
+    vend?: string;
+    forma: string;
+    desc: number;
+    itens: SaleItem[];
+  }): SaleRecord => {
+    const maxN = stateRef.current.vendas.reduce((m, s) => Math.max(m, Number(s.n) || 0), 0);
+    const nextN = Math.max(maxN, stateRef.current.counters?.nextSaleNumber || 0) + 1;
+    const today = todayIsoLocal();
+    const timeStr = nowClockStr();
+
+    const cleanItems: SaleItem[] = (input.itens || [])
+      .filter((x) => Boolean(x.d && x.d.trim()) && (Number(x.q) || 0) > 0)
+      .map((x) => {
+        const part = x.p ? stateRef.current.parts.find((p) => p.id === x.p) : undefined;
+        return {
+          p: x.p || undefined,
+          d: x.d.trim(),
+          q: Math.max(1, Number(x.q) || 1),
+          v: Math.max(0, Number(x.v) || 0),
+          c: x.c !== undefined ? Number(x.c) || 0 : part ? Number(part.costPrice) || 0 : 0,
+        };
+      });
+
+    const sale: SaleRecord = {
+      id: `vd-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+      n: nextN,
+      data: today,
+      cli: input.cli || undefined,
+      cliNome: input.cliNome?.trim() || undefined,
+      vend: input.vend?.trim() || undefined,
+      forma: input.forma || 'Pix',
+      desc: Math.max(0, Number(input.desc) || 0),
+      itens: cleanItems,
+      st: '',
+      updatedAt: Date.now(),
+    };
+
+    const total = calcSaleTotalAmount(sale);
+    const isCash = sale.forma.toLowerCase().includes('dinheiro');
+    const channel: CashTransaction['channel'] = isCash ? 'Dinheiro' : 'PIX';
+
+    setState((prev) => {
+      const qtyByPart: Record<string, number> = {};
+      cleanItems.forEach((x) => {
+        if (x.p) qtyByPart[x.p] = (qtyByPart[x.p] || 0) + x.q;
+      });
+      const nextParts = prev.parts.map((p) => {
+        const dec = qtyByPart[p.id];
+        if (!dec) return p;
+        const nextStock = Math.round((p.stock - dec) * 100) / 100;
+        return {
+          ...p,
+          stock: nextStock,
+          status: computePartStatus(nextStock, p.minStock),
+          updatedAt: Date.now(),
+        };
+      });
+
+      const clientLabel =
+        (sale.cli ? prev.clients.find((c) => c.id === sale.cli)?.name : '') ||
+        sale.cliNome ||
+        'Balcão';
+      const sellerTag = sale.vend ? ` · Vend.: ${sale.vend}` : '';
+      const tx: CashTransaction = {
+        id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        title: `Venda nº ${sale.n}`,
+        subtitle: `${clientLabel} · ${sale.forma}${sellerTag}`,
+        tag: 'PDV-BALCÃO',
+        channel,
+        type: 'in',
+        amount: total,
+        dateLabel: `Hoje, ${timeStr}`,
+        isoDate: today,
+        kind: 'venda',
+        reconciled: channel !== 'Dinheiro',
+        updatedAt: Date.now(),
+      };
+
+      const nextState: LabState = {
+        ...prev,
+        parts: nextParts,
+        vendas: [sale, ...prev.vendas],
+        counters: {
+          nextOrderNumber: prev.counters?.nextOrderNumber || 0,
+          nextSaleNumber: nextN,
+          nextPurchaseNumber: prev.counters?.nextPurchaseNumber || 0,
+        },
+        transactions: total > 0 ? [tx, ...prev.transactions] : prev.transactions,
+      };
+      return reconcileDerivedFromCfg(nextState);
+    });
+
+    scheduleCloudSync(2500);
+    return sale;
+  };
+
+  const reversePosSale = (saleId: string): { ok: boolean; error?: string } => {
+    const target = stateRef.current.vendas.find((v) => v.id === saleId);
+    if (!target) return { ok: false, error: 'Venda não encontrada.' };
+    if (target.st === 'Estornada') return { ok: false, error: 'Esta venda já foi estornada.' };
+
+    const today = todayIsoLocal();
+    const timeStr = nowClockStr();
+
+    setState((prev) => {
+      const sale = prev.vendas.find((v) => v.id === saleId);
+      if (!sale || sale.st === 'Estornada') return prev;
+
+      const qtyByPart: Record<string, number> = {};
+      (sale.itens || []).forEach((x) => {
+        if (x.p) qtyByPart[x.p] = (qtyByPart[x.p] || 0) + (Number(x.q) || 0);
+      });
+
+      const nextParts = prev.parts.map((p) => {
+        const inc = qtyByPart[p.id];
+        if (!inc) return p;
+        const nextStock = Math.round((p.stock + inc) * 100) / 100;
+        return {
+          ...p,
+          stock: nextStock,
+          status: computePartStatus(nextStock, p.minStock),
+          updatedAt: Date.now(),
+        };
+      });
+
+      const total = calcSaleTotalAmount(sale);
+      const clientLabel =
+        (sale.cli ? prev.clients.find((c) => c.id === sale.cli)?.name : '') ||
+        sale.cliNome ||
+        'Balcão';
+      const isCash = (sale.forma || '').toLowerCase().includes('dinheiro');
+      const tx: CashTransaction = {
+        id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        title: `Estorno da venda nº ${sale.n}`,
+        subtitle: `${clientLabel} · Estorno PDV`,
+        tag: 'Estorno PDV',
+        channel: isCash ? 'Dinheiro' : 'PIX',
+        type: 'out',
+        amount: total,
+        dateLabel: `Hoje, ${timeStr}`,
+        isoDate: today,
+        kind: 'dev',
+        reconciled: true,
+        updatedAt: Date.now(),
+      };
+
+      const nextState: LabState = {
+        ...prev,
+        parts: nextParts,
+        vendas: prev.vendas.map((v) =>
+          v.id === saleId ? { ...v, st: 'Estornada', updatedAt: Date.now() } : v
+        ),
+        transactions: total > 0 ? [tx, ...prev.transactions] : prev.transactions,
+      };
+
+      return reconcileDerivedFromCfg(nextState);
+    });
+
+    scheduleCloudSync(2500);
+    return { ok: true };
+  };
+
+  const addTransaction = (txInput: Omit<CashTransaction, 'id' | 'dateLabel'>) => {
+    const today = todayIsoLocal();
+    const isoDate = txInput.isoDate || today;
+    const timeStr = nowClockStr();
+    const isGar = txInput.type === 'out' && normStr(txInput.tag) === 'garantia';
+    const newTx: CashTransaction = {
+      ...txInput,
+      id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      isoDate,
+      kind: txInput.kind || (isGar ? 'gar' : undefined),
+      dateLabel: isoDate === today ? `Hoje, ${timeStr}` : formatDateBR(isoDate),
+      updatedAt: Date.now(),
+    };
+    setState((prev) =>
+      reconcileDerivedFromCfg({
+        ...prev,
+        transactions: [newTx, ...prev.transactions],
+      })
+    );
     scheduleCloudSync(3500);
+  };
+
+  /**
+   * `svGar` v17: Registra gasto da Reserva de Garantia (`k='gar'`, categoria `'Garantia'`) sem vincular `orderId`
+   * para que eventual exclusão não altere o valor pago da OS de origem.
+   */
+  const recordWarrantyExpense = (input: {
+    isoDate: string;
+    orderId?: number;
+    description: string;
+    amount: number;
+  }): { ok: boolean; error?: string } => {
+    const desc = input.description.trim();
+    const amount = Math.round((Number(input.amount) || 0) * 100) / 100;
+    if (!desc) return { ok: false, error: 'Informe a descrição do gasto de garantia.' };
+    if (amount <= 0) return { ok: false, error: 'Informe um valor maior que zero.' };
+
+    const today = todayIsoLocal();
+    const isoDate = input.isoDate || today;
+    const originOrder = input.orderId
+      ? stateRef.current.orders.find((o) => o.id === input.orderId)
+      : undefined;
+
+    const tx: CashTransaction = {
+      id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      title: `Garantia: ${desc}${originOrder ? ` (ref. OS ${originOrder.code})` : ''}`,
+      subtitle: originOrder
+        ? `${originOrder.clientName} · ${originOrder.device}`
+        : 'Cofre da Reserva de Garantia',
+      tag: 'Garantia',
+      channel: 'PIX',
+      type: 'out',
+      amount,
+      dateLabel: formatDateBR(isoDate),
+      isoDate,
+      refOrderId: originOrder?.id,
+      kind: 'gar',
+      reconciled: true,
+      updatedAt: Date.now(),
+    };
+
+    setState((prev) =>
+      reconcileDerivedFromCfg({
+        ...prev,
+        transactions: [tx, ...prev.transactions],
+      })
+    );
+    scheduleCloudSync(3000);
+    return { ok: true };
+  };
+
+  /**
+   * `dlF` v17: Exclui lançamento financeiro com segurança (somente Administrador).
+   * Se ligado a uma OS (`orderId`), estorna/recompõe o `paidAmount` e o status de pagamento da OS.
+   */
+  const deleteTransaction = (txId: string): { ok: boolean; error?: string } => {
+    const active = currentUserRef.current;
+    if (!active || active.nivel !== 'Administrador') {
+      return { ok: false, error: 'Somente o Administrador pode excluir lançamentos.' };
+    }
+    const target = stateRef.current.transactions.find((t) => t.id === txId);
+    if (!target) return { ok: false, error: 'Lançamento não encontrado.' };
+
+    setState((prev) => {
+      const tx = prev.transactions.find((t) => t.id === txId);
+      if (!tx) return prev;
+
+      let nextOrders = prev.orders;
+      if (tx.orderId) {
+        nextOrders = prev.orders.map((o) => {
+          if (o.id !== tx.orderId) return o;
+          const v = Math.max(0, Number(tx.amount) || 0);
+          let nextPaid = Math.max(0, Number(o.paidAmount) || 0);
+          let nextSignal = Math.max(0, Number(o.signalPaid) || 0);
+          let nextRefunded = Math.max(0, Number(o.refundedAmount) || 0);
+
+          if (tx.kind === 'sinal' || tx.kind === 'rec' || (!tx.kind && tx.type === 'in')) {
+            nextPaid = Math.max(0, Math.round((nextPaid - v) * 100) / 100);
+            if (tx.kind === 'sinal') {
+              nextSignal = Math.max(0, Math.round((nextSignal - v) * 100) / 100);
+            }
+          } else if (tx.kind === 'estSinal') {
+            nextPaid = Math.round((nextPaid + v) * 100) / 100;
+            nextSignal = Math.round((nextSignal + v) * 100) / 100;
+          } else if (tx.kind === 'dev') {
+            nextPaid = Math.round((nextPaid + v) * 100) / 100;
+            nextRefunded = Math.max(0, Math.round((nextRefunded - v) * 100) / 100);
+          }
+
+          const orderTotal = calcOrderTotalAmount(o);
+          const nextPaymentStatus: ServiceOrder['paymentStatus'] =
+            nextPaid >= orderTotal && orderTotal > 0
+              ? o.paymentStatus === 'Pago Dinheiro'
+                ? 'Pago Dinheiro'
+                : 'Pago Pix'
+              : nextPaid > 0
+              ? 'Pendente'
+              : 'Orçado';
+
+          return {
+            ...o,
+            paidAmount: nextPaid,
+            signalPaid: nextSignal,
+            refundedAmount: nextRefunded,
+            paymentStatus: nextPaymentStatus,
+            updatedAt: Date.now(),
+          };
+        });
+      }
+
+      return reconcileDerivedFromCfg({
+        ...prev,
+        orders: nextOrders,
+        transactions: prev.transactions.filter((t) => t.id !== txId),
+      });
+    });
+
+    scheduleCloudSync(2500);
+    return { ok: true };
+  };
+
+  const addWarrantyCase = (
+    input: Omit<WarrantyCase, 'id' | 'code' | 'openedAt'>
+  ): WarrantyCase => {
+    const maxNum = stateRef.current.warranties.reduce((max, w) => {
+      const m = String(w.code || '').match(/(\d+)/);
+      return m ? Math.max(max, Number(m[1]) || 0) : max;
+    }, 100);
+    const nextCode = `#GAR-${maxNum + 1}`;
+    const today = todayIsoLocal();
+    const created: WarrantyCase = {
+      ...input,
+      id: `gar-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+      code: nextCode,
+      openedAt: `${formatDateBR(today)} · ${nowClockStr()}`,
+      updatedAt: Date.now(),
+    };
+    setState((prev) => ({
+      ...prev,
+      warranties: [created, ...prev.warranties],
+    }));
+    scheduleCloudSync(3000);
+    return created;
   };
 
   const updateWarrantyStatus = (
@@ -1922,36 +2766,61 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     scheduleCloudSync(3500);
   };
 
-  const updateBudgetParams = (partial: Partial<LabState['budgetParams']>) => {
-    setState((prev) => {
-      const prevCfg = prev.cfg;
-      const nextCfg: LabConfig = {
-        ...prevCfg,
-        ocup: partial.occupancyPct !== undefined ? Math.max(0, Math.min(1, partial.occupancyPct / 100)) : prevCfg.ocup,
-        proLabore: partial.proLabore !== undefined ? Math.max(0, partial.proLabore) : prevCfg.proLabore,
-        horaMin: partial.baseHourlyRate !== undefined && prevCfg.preco.modo !== 'manual' ? Math.max(0, partial.baseHourlyRate) : prevCfg.horaMin,
-        taxaPag: partial.paymentFeePct !== undefined ? Math.max(0, partial.paymentFeePct / 100) : prevCfg.taxaPag,
-        reservaGar: partial.guaranteeRatePct !== undefined ? Math.max(0, partial.guaranteeRatePct / 100) : prevCfg.reservaGar,
-        reservaCap: partial.workingCapitalRatePct !== undefined ? Math.max(0, partial.workingCapitalRatePct / 100) : prevCfg.reservaCap,
-        preco: {
-          ...prevCfg.preco,
-          margem:
-            partial.profitMarginPct !== undefined
-              ? Math.max(0, partial.profitMarginPct / 100)
-              : prevCfg.preco.margem,
-          hora:
-            partial.baseHourlyRate !== undefined && prevCfg.preco.modo === 'manual'
-              ? Math.max(0, partial.baseHourlyRate)
-              : prevCfg.preco.hora,
-          indireto:
-            partial.indirectHourlyRate !== undefined && prevCfg.preco.modo === 'manual'
-              ? Math.max(0, partial.indirectHourlyRate)
-              : prevCfg.preco.indireto,
-        },
-      };
-      return reconcileDerivedFromCfg({ ...prev, cfg: nextCfg });
-    });
-    scheduleCloudSync(3500);
+  const addServiceCatalog = (
+    input: Omit<ServiceCatalogItem, 'id'>
+  ): ServiceCatalogItem => {
+    const created: ServiceCatalogItem = {
+      id: `srv-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+      nome: input.nome.trim(),
+      cat: input.cat.trim() || 'Geral',
+      tempo: Math.max(0, Number(input.tempo) || 0),
+      cons: Math.max(0, Number(input.cons) || 0),
+      peca: input.peca.trim(),
+      gar: String(input.gar ?? '').trim(),
+      mercado: Math.max(0, Number(input.mercado) || 0),
+      updatedAt: Date.now(),
+    };
+    setState((prev) => ({
+      ...prev,
+      servicos: [...prev.servicos, created],
+    }));
+    scheduleCloudSync(3000);
+    return created;
+  };
+
+  const updateServiceCatalog = (
+    id: string,
+    partial: Partial<Omit<ServiceCatalogItem, 'id'>>
+  ) => {
+    setState((prev) => ({
+      ...prev,
+      servicos: prev.servicos.map((s) =>
+        s.id === id
+          ? {
+              ...s,
+              ...partial,
+              nome: partial.nome !== undefined ? partial.nome.trim() : s.nome,
+              cat: partial.cat !== undefined ? partial.cat.trim() || 'Geral' : s.cat,
+              tempo: partial.tempo !== undefined ? Math.max(0, Number(partial.tempo) || 0) : s.tempo,
+              cons: partial.cons !== undefined ? Math.max(0, Number(partial.cons) || 0) : s.cons,
+              peca: partial.peca !== undefined ? partial.peca.trim() : s.peca,
+              gar: partial.gar !== undefined ? String(partial.gar ?? '').trim() : s.gar,
+              mercado:
+                partial.mercado !== undefined ? Math.max(0, Number(partial.mercado) || 0) : s.mercado,
+              updatedAt: Date.now(),
+            }
+          : s
+      ),
+    }));
+    scheduleCloudSync(3000);
+  };
+
+  const deleteServiceCatalog = (id: string) => {
+    setState((prev) => ({
+      ...prev,
+      servicos: prev.servicos.filter((s) => s.id !== id),
+    }));
+    scheduleCloudSync(3000);
   };
 
   const updateLabConfig = (updater: Partial<LabConfig> | ((prevCfg: LabConfig) => LabConfig)) => {
@@ -2000,7 +2869,6 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ) => {
     const nome = item.nome.trim();
     if (!nome) return;
-    const currentMonth = new Date().toISOString().slice(0, 7);
     const created: FixedExpenseItem = {
       id: `fixo-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       nome,
@@ -2008,10 +2876,12 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       cat: item.cat || 'Outros',
       dia: Math.max(1, Math.min(28, parseInt(String(item.dia || 1), 10) || 1)),
       ativo: item.ativo !== false,
-      ultimo: currentMonth,
+      ultimo: '',
       updatedAt: Date.now(),
     };
-    setState((prev) => reconcileDerivedFromCfg({ ...prev, fixos: [...prev.fixos, created] }));
+    setState((prev) =>
+      applyDueFixedExpenses(reconcileDerivedFromCfg({ ...prev, fixos: [...prev.fixos, created] })).state
+    );
     scheduleCloudSync(3500);
   };
 
@@ -2276,7 +3146,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!parsed || !Array.isArray(parsed.orders) || !Array.isArray(parsed.clients)) {
         return { ok: false, error: 'Arquivo JSON inválido: estrutura MicroLab OS não reconhecida.' };
       }
-      const clean = hydrateLabState(parsed);
+      const clean = applyDueFixedExpenses(hydrateLabState(parsed)).state;
       const uid = auth.uid || '';
       saveSyncMetadata(uid, emptySyncMetadata(uid));
       setState(clean);
@@ -2357,17 +3227,30 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteOrderWithAdminPin,
         attachTelemetryToOrder,
         addClient,
+        updateClient,
+        deleteClient,
         addClientNote,
-        reorderPriorityQueue,
-        enqueuePriorityItem,
-        updateDayCapacity,
+        moveOrderInQueue,
         addPart,
+        updatePart,
+        deletePart,
         adjustPartStock,
+        batchReadjustParts,
         addSupplier,
+        updateSupplier,
+        deleteSupplier,
+        createPurchaseOrder,
+        receivePurchaseOrder,
+        createPosSale,
+        reversePosSale,
         addTransaction,
-        recordRestockOrder,
+        recordWarrantyExpense,
+        deleteTransaction,
+        addWarrantyCase,
         updateWarrantyStatus,
-        updateBudgetParams,
+        addServiceCatalog,
+        updateServiceCatalog,
+        deleteServiceCatalog,
         updateLabConfig,
         setWeekdayHours,
         setWorkdaysHours,
@@ -2388,6 +3271,16 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         exportBackupJson,
         importBackupJson,
         factoryResetLocalDb,
+        savePowerMemory,
+        deletePowerMemory,
+        upsertOrderPowerTest,
+        addOrderDiagnosticReport,
+        deleteOrderDiagnosticReport,
+        addCustomDefect,
+        deleteCustomDefect,
+        setTempCalibration,
+        setPmicMinVoltage,
+        setPowerSupplyTheme,
       }}
     >
       {children}

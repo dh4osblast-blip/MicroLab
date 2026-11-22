@@ -31,12 +31,53 @@ interface CheckInOutViewProps {
   onSelectOrder: (orderId: number) => void;
 }
 
-const EVIDENCE_SLOTS = [
+type EvidenceSlotId = 'front' | 'back' | 'rails' | 'dock';
+
+const EVIDENCE_SLOTS: { id: EvidenceSlotId; title: string; note: string }[] = [
   { id: 'front', title: 'Frontal / Display', note: 'Película riscada, vidro íntegro' },
   { id: 'back', title: 'Tampa Traseira & Câmeras', note: 'Lentes sem trincos' },
   { id: 'rails', title: 'Laterais & Parafusos', note: 'Sem sinais de violação' },
   { id: 'dock', title: 'Conector & Lacre Entrada', note: 'Oxidação negativa no pino' },
 ];
+
+async function resizeEvidencePhoto800Jpeg(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Não foi possível ler o arquivo de imagem.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Formato de imagem inválido.'));
+      img.onload = () => {
+        const maxSide = 800;
+        let w = img.width;
+        let h = img.height;
+        if (w > maxSide || h > maxSide) {
+          if (w >= h) {
+            h = Math.round((h * maxSide) / w);
+            w = maxSide;
+          } else {
+            w = Math.round((w * maxSide) / h);
+            h = maxSide;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Canvas indisponível neste navegador.'));
+          return;
+        }
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.75));
+      };
+      img.src = String(reader.result || '');
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 const normStr = (s: string) =>
   String(s || '')
@@ -119,12 +160,8 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
   const [entry7, setEntry7] = useState<Record<string, 's' | 'n' | 't'>>(initialEntry7);
   const [triage, setTriage] = useState<OrderTriage>({ imeiSt: '' });
 
-  const [evidenceVerified, setEvidenceVerified] = useState<Record<string, boolean>>({
-    front: true,
-    back: true,
-    rails: true,
-    dock: true,
-  });
+  const [evidencePhotos, setEvidencePhotos] = useState<Partial<Record<EvidenceSlotId, string>>>({});
+  const [evidenceError, setEvidenceError] = useState('');
   const [lgpdAccepted, setLgpdAccepted] = useState(true);
   const [hasSigned, setHasSigned] = useState(false);
   const [createdOrder, setCreatedOrder] = useState<ServiceOrder | null>(null);
@@ -236,6 +273,30 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
     setHasSigned(false);
   };
 
+  const handleEvidenceFileChange = async (
+    slotId: EvidenceSlotId,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setEvidenceError('');
+    try {
+      const resizedDataUrl = await resizeEvidencePhoto800Jpeg(file);
+      setEvidencePhotos((prev) => ({ ...prev, [slotId]: resizedDataUrl }));
+    } catch (err) {
+      setEvidenceError(err instanceof Error ? err.message : 'Não foi possível processar a foto.');
+    }
+  };
+
+  const removeEvidencePhoto = (slotId: EvidenceSlotId) => {
+    setEvidencePhotos((prev) => {
+      const next = { ...prev };
+      delete next[slotId];
+      return next;
+    });
+  };
+
   const handleSubmitCheckIn = (e: React.FormEvent) => {
     e.preventDefault();
     if (!lgpdAccepted) return;
@@ -246,7 +307,14 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
     const cleanPin = passcode.trim();
     const cleanPattern = [...patternNodes];
     const hasSecret = Boolean(cleanPin || cleanPattern.length > 0);
-    const evidenceCount = Object.values(evidenceVerified).filter(Boolean).length;
+    const cleanEvidencePhotos: Partial<Record<EvidenceSlotId, string>> = {};
+    (Object.keys(evidencePhotos) as EvidenceSlotId[]).forEach((slotKey) => {
+      const val = evidencePhotos[slotKey];
+      if (val) cleanEvidencePhotos[slotKey] = val;
+    });
+    const evidenceCount = Object.keys(cleanEvidencePhotos).length;
+    const signatureDataUrl =
+      hasSigned && canvasRef.current ? canvasRef.current.toDataURL('image/png') : undefined;
 
     const newOs = saveServiceOrder({
       data: {
@@ -268,6 +336,8 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
           .map((x) => x.trim())
           .filter(Boolean),
         evidenceCount,
+        evidencePhotos: evidenceCount > 0 ? cleanEvidencePhotos : undefined,
+        signatureDataUrl,
         entryChecklist7: { ...entry7 },
         triage: { ...triage },
         issue: issue.trim() || 'Análise de bancada solicitada',
@@ -316,6 +386,8 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
     setImei('');
     setIssue('');
     setSignalPaid(0);
+    setEvidencePhotos({});
+    setEvidenceError('');
     clearSignature();
     setCreatedOrder(newOs);
   };
@@ -907,45 +979,98 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
               )}
             </div>
 
-            {/* Visual Evidence 4-Slot Schematic */}
+            {/* Visual Evidence 4-Slot Real Photo Capture */}
             <div className="rounded-2xl bg-white p-5 border border-[#D9E0EC] space-y-3">
-              <h2 className="text-sm font-bold text-[#091b36] flex items-center gap-2">
-                <Camera className="w-4 h-4 text-[#0056ab]" />
-                <span>5. Registro Visual de Evidências (4 Ângulos)</span>
-              </h2>
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-sm font-bold text-[#091b36] flex items-center gap-2">
+                  <Camera className="w-4 h-4 text-[#0056ab]" />
+                  <span>5. Registro Visual de Evidências (4 Ângulos)</span>
+                </h2>
+                <span className="text-[11px] font-semibold text-[#0056ab] tabular-nums">
+                  {Object.keys(evidencePhotos).length}/4 fotos
+                </span>
+              </div>
+              {evidenceError && (
+                <div className="rounded-xl bg-[#FEE2E2] border border-[#DC2626]/30 px-3 py-2 text-[11px] font-semibold text-[#DC2626]">
+                  {evidenceError}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-2.5">
                 {EVIDENCE_SLOTS.map((slot) => {
-                  const verified = !!evidenceVerified[slot.id];
+                  const photo = evidencePhotos[slot.id];
+                  const inputId = `checkin-evidence-${slot.id}`;
                   return (
-                    <button
+                    <div
                       key={slot.id}
-                      type="button"
-                      onClick={() => setEvidenceVerified((p) => ({ ...p, [slot.id]: !p[slot.id] }))}
-                      className={`p-3 rounded-xl border text-left transition-colors cursor-pointer ${
-                        verified
+                      className={`p-3 rounded-xl border text-left transition-colors flex flex-col justify-between gap-2 ${
+                        photo
                           ? 'bg-[#F3F6FB] border-[#0056ab]/35'
                           : 'bg-white border-dashed border-[#D9E0EC]'
                       }`}
                     >
-                      <div className="flex items-center justify-between mb-1.5">
-                        <Smartphone className="w-4 h-4 text-[#0056ab]" />
-                        <span
-                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                            verified ? 'bg-[#DCFCE7] text-[#16A34A]' : 'bg-[#F3F6FB] text-[#727784]'
-                          }`}
-                        >
-                          {verified ? 'REGISTRADO' : 'PENDENTE'}
-                        </span>
+                      <input
+                        id={inputId}
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        onChange={(e) => void handleEvidenceFileChange(slot.id, e)}
+                        className="hidden"
+                      />
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <Smartphone className="w-4 h-4 text-[#0056ab]" />
+                          <span
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                              photo ? 'bg-[#DCFCE7] text-[#16A34A]' : 'bg-[#F3F6FB] text-[#727784]'
+                            }`}
+                          >
+                            {photo ? 'CAPTURADA' : 'PENDENTE'}
+                          </span>
+                        </div>
+                        <p className="text-xs font-semibold text-[#091b36]">{slot.title}</p>
+                        <p className="text-[10px] text-[#727784] mt-0.5">{slot.note}</p>
                       </div>
-                      <p className="text-xs font-semibold text-[#091b36]">{slot.title}</p>
-                      <p className="text-[10px] text-[#727784] mt-0.5">{slot.note}</p>
-                    </button>
+
+                      {photo ? (
+                        <div className="space-y-1.5">
+                          <img
+                            src={photo}
+                            alt={slot.title}
+                            className="w-full h-24 object-cover rounded-lg border border-[#D9E0EC]"
+                          />
+                          <div className="flex items-center gap-1.5">
+                            <label
+                              htmlFor={inputId}
+                              className="flex-1 text-center rounded-lg border border-[#D9E0EC] bg-white py-1 text-[10px] font-semibold text-[#0056ab] hover:bg-[#EAF2FD] cursor-pointer"
+                            >
+                              Trocar foto
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => removeEvidencePhoto(slot.id)}
+                              title="Remover foto"
+                              className="p-1 rounded-lg border border-[#DC2626]/30 bg-white text-[#DC2626] hover:bg-[#FEE2E2] cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <label
+                          htmlFor={inputId}
+                          className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#0056ab]/30 bg-[#EAF2FD]/70 py-1.5 text-[11px] font-semibold text-[#0056ab] hover:bg-[#EAF2FD] cursor-pointer"
+                        >
+                          <Camera className="w-3.5 h-3.5" />
+                          <span>Fotografar / Anexar</span>
+                        </label>
+                      )}
+                    </div>
                   );
                 })}
               </div>
             </div>
 
-            {canAccessRoute('fonte-zk-sk150c') && (
+            {canAccessRoute('fonte') && (
               <div className="rounded-2xl bg-[#0B0F17] text-white p-4 border border-[#2A3954] flex items-center justify-between gap-3">
                 <div className="space-y-1">
                   <div className="flex items-center gap-1.5 text-xs font-bold text-[#06B6D4]">
@@ -958,7 +1083,7 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
                 </div>
                 <button
                   type="button"
-                  onClick={() => onNavigate('fonte-zk-sk150c')}
+                  onClick={() => onNavigate('fonte')}
                   className="font-mono text-[11px] font-bold text-[#0B0F17] bg-[#06B6D4] px-3 py-1.5 rounded-lg hover:bg-[#22d3ee] shrink-0 cursor-pointer"
                 >
                   Abrir Fonte

@@ -40,8 +40,9 @@ export const ROLE_ALLOWED_ROUTES: Record<UserRole, '*' | readonly RouteId[]> = {
     'agenda-de-bancada',
     'produtos-e-pecas',
     'garantias',
-    'fonte-zk-sk150c',
-    'diagnostico',
+    'fonte',
+    'defeitos',
+    'bancada',
   ],
 };
 

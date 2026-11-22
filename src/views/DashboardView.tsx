@@ -42,8 +42,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const { state, currentUser, canAccessRoute, markOrderPartArrived } = useLabStore();
   const [filterTab, setFilterTab] = useState<'Todas' | 'Bancada' | 'Aguardando' | 'Prontas'>('Todas');
   const [confirmPartOrderId, setConfirmPartOrderId] = useState<number | null>(null);
-  const canSeeFinancialSummary =
-    canAccessRoute('fluxo-de-caixa') || canAccessRoute('envelopes-inter');
+  const canSeeFinancialSummary = canAccessRoute('fluxo-de-caixa');
 
   const todayIso = todayIsoLocal();
   const pendingPartsAlertOrders = canAccessRoute('ordens-de-servico')
@@ -129,7 +128,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     { route: 'nova-os', label: 'Nova OS', sub: 'Check-in rápido', icon: Plus, action: () => onNavigate('nova-os') },
     { route: 'pdv-rapido', label: 'PDV Rápido', sub: 'Venda & Balcão', icon: ShoppingCart, action: () => onNavigate('pdv-rapido') },
     { route: 'agenda-de-bancada', label: 'Agenda Bancada', sub: `${todayUsed.toFixed(1)}h / ${todayTotal.toFixed(1)}h`, icon: Calendar, action: () => onNavigate('agenda-de-bancada') },
-    { route: 'fonte-zk-sk150c', label: 'Fonte ZK-SK150C', sub: 'Telemetria DC', icon: Zap, action: () => onNavigate('fonte-zk-sk150c') },
+    { route: 'fonte', label: 'Fonte ZK-SK150C', sub: 'Telemetria DC', icon: Zap, action: () => onNavigate('fonte') },
     { route: 'simulador-orcamento', label: 'Simular Preço', sub: 'Orçamento rápido', icon: Sliders, action: () => onNavigate('simulador-orcamento') },
     { route: 'gerador-pix', label: 'Gerar PIX', sub: 'Inter Dinâmico', icon: QrCode, action: () => onOpenPix(0, 'Cobrança Bancada') },
   ];
@@ -167,10 +166,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 <span>Abrir Check-in / OS</span>
               </button>
             )}
-            {canAccessRoute('fonte-zk-sk150c') && (
+            {canAccessRoute('fonte') && (
               <button
                 type="button"
-                onClick={() => onNavigate('fonte-zk-sk150c')}
+                onClick={() => onNavigate('fonte')}
                 className="inline-flex items-center gap-1.5 rounded-xl bg-white/15 border border-white/25 text-white px-4 py-2.5 text-xs font-semibold hover:bg-white/25 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <Zap className="w-4 h-4 text-[#06B6D4]" />
@@ -391,10 +390,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <Activity className="w-4 h-4 text-[#06B6D4]" />
                   <span className="text-xs font-bold tracking-wide">ZK-SK150C · Última Leitura Salva</span>
                 </div>
-                {canAccessRoute('fonte-zk-sk150c') && (
+                {canAccessRoute('fonte') && (
                   <button
                     type="button"
-                    onClick={() => onNavigate('fonte-zk-sk150c')}
+                    onClick={() => onNavigate('fonte')}
                     className="text-[11px] font-semibold text-[#06B6D4] hover:underline cursor-pointer whitespace-nowrap"
                   >
                     Abrir Painel →

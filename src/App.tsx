@@ -16,6 +16,8 @@ import { WarrantiesView } from './views/WarrantiesView';
 import { FinanceInterSimView } from './views/FinanceInterSimView';
 import { CashFlowDreView } from './views/CashFlowDreView';
 import { BenchPowerView } from './views/BenchPowerView';
+import { DefectsAssistantView } from './views/DefectsAssistantView';
+import { BenchReferenceView } from './views/BenchReferenceView';
 import { SettingsView } from './views/SettingsView';
 
 function LabAppRouter() {
@@ -122,7 +124,7 @@ function LabAppRouter() {
           />
         );
       case 'agenda-de-bancada':
-        return <ScheduleView />;
+        return <ScheduleView onSelectOrder={handleSelectOrderAndNavigate} />;
       case 'pdv-rapido':
         return <PosView />;
       case 'produtos-e-pecas':
@@ -137,27 +139,22 @@ function LabAppRouter() {
           />
         );
       case 'envelopes-inter':
-        return (
-          <FinanceInterSimView
-            defaultFocus="envelopes"
-            onOpenPix={handleOpenPix}
-            onConvertToOs={() => handleNavigate('ordens-de-servico')}
-          />
-        );
+        return <CashFlowDreView />;
       case 'simulador-orcamento':
         return (
           <FinanceInterSimView
-            defaultFocus="simulator"
             onOpenPix={handleOpenPix}
             onConvertToOs={() => handleNavigate('ordens-de-servico')}
           />
         );
       case 'fluxo-de-caixa':
         return <CashFlowDreView />;
-      case 'fonte-zk-sk150c':
-        return <BenchPowerView key="zk" defaultDiagnosisMode={false} />;
-      case 'diagnostico':
-        return <BenchPowerView key="diag" defaultDiagnosisMode={true} />;
+      case 'fonte':
+        return <BenchPowerView />;
+      case 'defeitos':
+        return <DefectsAssistantView />;
+      case 'bancada':
+        return <BenchReferenceView onNavigate={handleNavigate} />;
       case 'configuracoes':
         return <SettingsView />;
       default:

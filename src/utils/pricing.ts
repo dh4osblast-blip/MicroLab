@@ -1,9 +1,16 @@
 import {
+  CashTransaction,
+  Client,
   FixedExpenseItem,
   LabConfig,
+  MicroComplexityLevel,
+  PartItem,
   PartsMarginCurveConfig,
+  PurchaseRecord,
   RoundingConfig,
+  SaleRecord,
   ServiceCatalogItem,
+  ServiceOrder,
 } from '../types/lab';
 
 // Official MicroLab Financial & Pricing Parameters
@@ -167,6 +174,13 @@ export const FIXED_SHORTCUTS: readonly { nome: string; cat: string }[] = [
   { nome: 'Depreciação de ferramentas / outros', cat: 'Outros' },
 ];
 
+export const DEFAULT_COMPLEXIDADES: MicroComplexityLevel[] = [
+  { id: 'n1', nome: 'Nível 1 — Periféricos & Telas', mult: 1.0 },
+  { id: 'n2', nome: 'Nível 2 — Conectores FPC / Carga', mult: 1.2 },
+  { id: 'n3', nome: 'Nível 3 — Linhas Principais / Curto', mult: 1.5 },
+  { id: 'n4', nome: 'Nível 4 — Reballing CPU / Sanduíche', mult: 2.0 },
+];
+
 export function createDefaultLabConfig(): LabConfig {
   return {
     bg: '#ffffff',
@@ -209,6 +223,7 @@ export function createDefaultLabConfig(): LabConfig {
     tempCal: {},
     pmicMin: 3.4,
     defeitosExtra: [],
+    complexidades: DEFAULT_COMPLEXIDADES.map((c) => ({ ...c })),
     _ts: {},
     updatedAt: 1,
   };
@@ -750,4 +765,813 @@ export function getOrderWarrantyBadge(
   }
   return { label: 'Garantia expirada', tone: 'muted' };
 }
+
+// ---------- Etapa 5: Motor de Alocação da Agenda de Bancada v17 (semPeca, fila, planejar, previsaoNova) ----------
+
+export interface PlannedBlock {
+  osId: number | '_novo';
+  hours: number;
+}
+
+export interface PlannedDay {
+  iso: string;
+  cap: number;
+  livre: number;
+  blocos: PlannedBlock[];
+}
+
+export interface PlanejarResult {
+  dias: PlannedDay[];
+  prev: Record<string, string>;
+  fim: string;
+}
+
+const ACTIVE_QUEUE_STATUSES = new Set<string>([
+  'Aprovado',
+  'Em reparo',
+  'Aprovado / Fila',
+  'Em Reparo SMD',
+]);
+
+/**
+ * v17: OS Aprovada com peça encomendada que ainda não chegou não consome horas da bancada.
+ */
+export function semPeca(
+  o: Pick<ServiceOrder, 'status' | 'pedPrev' | 'pedChegou'>
+): boolean {
+  return o.status === 'Aprovado' && Boolean(o.pedPrev) && !o.pedChegou;
+}
+
+/**
+ * Retorna a fila ordenada por prioridade manual (`ord`) e depois pelo número da OS (`id`).
+ */
+export function getFilaOrders(orders: ServiceOrder[]): ServiceOrder[] {
+  return (orders || [])
+    .filter((o) => ACTIVE_QUEUE_STATUSES.has(o.status) && !semPeca(o))
+    .sort((a, b) => (a.ord || 1e9) - (b.ord || 1e9) || a.id - b.id);
+}
+
+/**
+ * OS que aguardam peça e por isso não ocupam horas na fila ativa.
+ */
+export function getAwaitingPartOrders(orders: ServiceOrder[]): ServiceOrder[] {
+  return (orders || [])
+    .filter((o) => semPeca(o) || o.status === 'Aguardando Peça')
+    .sort(
+      (a, b) =>
+        (a.pedPrev || '9999-99-99').localeCompare(b.pedPrev || '9999-99-99') || a.id - b.id
+    );
+}
+
+/**
+ * Motor de alocação v17 (`planejar`):
+ * Lê `cfg.horas` (0=Dom..6=Sáb) a partir de hoje, pula dias com 0h (Folga)
+ * e distribui sequencialmente as horas das OS da fila, quebrando serviços longos em múltiplos dias.
+ */
+export function planejar(
+  orders: ServiceOrder[],
+  horas: number[],
+  extraHours = 0
+): PlanejarResult {
+  const H = Array.isArray(horas) && horas.length === 7 ? horas : [...OFFICIAL_HOURS_BY_DOW];
+  if (!H.some((h) => Number(h) > 0)) {
+    return { dias: [], prev: {}, fim: '' };
+  }
+
+  const queue: { id: number | '_novo'; h: number }[] = getFilaOrders(orders).map((o) => ({
+    id: o.id,
+    h: Math.max(Number(o.estimatedHours) || 0, 0),
+  }));
+  if (extraHours > 0) {
+    queue.push({ id: '_novo', h: Number(extraHours) });
+  }
+
+  const dias: PlannedDay[] = [];
+  const prev: Record<string, string> = {};
+  const now = new Date();
+  let d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let dia: PlannedDay | undefined;
+
+  const novo = () => {
+    for (let k = 0; k < 400; k++) {
+      const cap = Math.max(0, Number(H[d.getDay()]) || 0);
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+        d.getDate()
+      ).padStart(2, '0')}`;
+      d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+      if (cap > 0) {
+        dia = { iso, cap, livre: cap, blocos: [] };
+        dias.push(dia);
+        return;
+      }
+    }
+  };
+
+  novo();
+  if (!dia) {
+    return { dias: [], prev: {}, fim: '' };
+  }
+
+  for (const o of queue) {
+    let r = o.h;
+    if (r <= 0) {
+      prev[String(o.id)] = dia.iso;
+      continue;
+    }
+    while (r > 1e-9) {
+      if (dia.livre <= 1e-9) {
+        const beforeLen = dias.length;
+        novo();
+        if (dias.length === beforeLen) break;
+      }
+      const u = Math.min(r, dia.livre);
+      dia.blocos.push({ osId: o.id, hours: Math.round(u * 1000) / 1000 });
+      dia.livre = Math.max(0, dia.livre - u);
+      r -= u;
+      prev[String(o.id)] = dia.iso;
+    }
+  }
+
+  return {
+    dias,
+    prev,
+    fim: dia.iso,
+  };
+}
+
+export function previsaoNova(
+  orders: ServiceOrder[],
+  horas: number[],
+  extraHours: number
+): string {
+  return extraHours > 0 ? planejar(orders, horas, extraHours).prev._novo || '' : '';
+}
+
+// ---------- Etapa 6: Estoque (low, giro 90d), Compras, Vendas & Métricas de Clientes ----------
+
+/**
+ * Regra v17 `low(p)`: saldo negativo ou menor/igual ao mínimo configurado (>0).
+ */
+export function isLowStock(p: Pick<PartItem, 'stock' | 'minStock'>): boolean {
+  const q = Number(p.stock) || 0;
+  const min = Number(p.minStock) || 0;
+  return q < 0 || (min > 0 && q <= min);
+}
+
+export function computePartStatus(stock: number, minStock: number): PartItem['status'] {
+  const q = Number(stock) || 0;
+  const min = Number(minStock) || 0;
+  if (q <= 0) return 'Esgotado';
+  if (min > 0 && q <= min) return 'Alerta Reposição';
+  return 'Disponível';
+}
+
+export function calcSaleTotalAmount(
+  sale: Pick<SaleRecord, 'itens' | 'desc'>
+): number {
+  const sub = (sale.itens || []).reduce(
+    (sum, x) => sum + (Number(x.q) || 0) * (Number(x.v) || 0),
+    0
+  );
+  return Math.max(0, Math.round((sub - (Number(sale.desc) || 0)) * 100) / 100);
+}
+
+export function calcPurchaseTotalAmount(
+  purchase: Pick<PurchaseRecord, 'itens' | 'frete' | 'desc'>
+): number {
+  const sub = (purchase.itens || []).reduce(
+    (sum, x) => sum + (Number(x.q) || 0) * (Number(x.v) || 0),
+    0
+  );
+  return Math.max(
+    0,
+    Math.round((sub + (Number(purchase.frete) || 0) - (Number(purchase.desc) || 0)) * 100) / 100
+  );
+}
+
+export interface PartTurnoverRow {
+  part: PartItem;
+  sold90d: number;
+  estimatedDaysRemaining: number | null;
+}
+
+/**
+ * Giro de estoque (últimos 90 dias): soma saídas de peças em OS Entregues + Vendas não estornadas.
+ */
+export function calcInventoryTurnover90d(
+  parts: PartItem[],
+  orders: ServiceOrder[],
+  vendas: SaleRecord[]
+): { totalStockCost: number; rows: PartTurnoverRow[] } {
+  const lim90 = addDiasIso(todayIsoLocal(), -90);
+  const outByPart: Record<string, number> = {};
+
+  (orders || []).forEach((o) => {
+    if (o.status !== 'Entregue') return;
+    const dt = (o.deliveredAt || o.createdDate || '').slice(0, 10);
+    if (!dt || dt < lim90) return;
+    if (!o.clientSuppliedPart && o.partId) {
+      outByPart[o.partId] = (outByPart[o.partId] || 0) + 1;
+    }
+    (o.extraItems || []).forEach((it) => {
+      if (it.p) {
+        outByPart[it.p] = (outByPart[it.p] || 0) + Math.max(0, Number(it.q) || 0);
+      }
+    });
+  });
+
+  (vendas || []).forEach((v) => {
+    if (v.st === 'Estornada') return;
+    const dt = (v.data || '').slice(0, 10);
+    if (!dt || dt < lim90) return;
+    (v.itens || []).forEach((it) => {
+      if (it.p) {
+        outByPart[it.p] = (outByPart[it.p] || 0) + Math.max(0, Number(it.q) || 0);
+      }
+    });
+  });
+
+  const totalStockCost =
+    Math.round(
+      (parts || []).reduce(
+        (sum, p) => sum + Math.max(0, Number(p.stock) || 0) * Math.max(0, Number(p.costPrice) || 0),
+        0
+      ) * 100
+    ) / 100;
+
+  const rows = (parts || []).map((part) => {
+    const sold90d = Math.round((outByPart[part.id] || 0) * 100) / 100;
+    const estimatedDaysRemaining =
+      sold90d > 0 ? Math.max(0, Math.round((Number(part.stock) || 0) / (sold90d / 90))) : null;
+    return { part, sold90d, estimatedDaysRemaining };
+  });
+
+  return { totalStockCost, rows };
+}
+
+export interface ClientComputedMetrics {
+  ltv: number;
+  ordersCount: number;
+  deliveredOrdersCount: number;
+  validSalesCount: number;
+  lastActivityIso: string;
+  daysInactive: number | null;
+  isInactive90d: boolean;
+  lastDevice: string;
+}
+
+export function calcClientMetrics(
+  client: Client,
+  orders: ServiceOrder[],
+  vendas: SaleRecord[]
+): ClientComputedMetrics {
+  const clientNameLower = client.name.trim().toLowerCase();
+  const matchedOrders = (orders || []).filter(
+    (o) =>
+      o.clientId === client.id ||
+      (o.clientName || '').trim().toLowerCase() === clientNameLower
+  );
+  const deliveredOrders = matchedOrders.filter((o) => o.status === 'Entregue');
+
+  const validSales = (vendas || []).filter(
+    (v) =>
+      v.st !== 'Estornada' &&
+      (v.cli === client.id ||
+        (!v.cli && (v.cliNome || '').trim().toLowerCase() === clientNameLower))
+  );
+
+  const osTotal = deliveredOrders.reduce((sum, o) => sum + calcOrderTotalAmount(o), 0);
+  const salesTotal = validSales.reduce((sum, v) => sum + calcSaleTotalAmount(v), 0);
+  const ltv = Math.round((osTotal + salesTotal) * 100) / 100;
+  const ordersCount = deliveredOrders.length + validSales.length;
+
+  let lastActivityIso = '';
+  let lastDevice = client.lastDevice;
+  let latestOsDate = '';
+
+  matchedOrders.forEach((o) => {
+    if (o.status === 'Cancelado') return;
+    const dt = (o.deliveredAt || o.createdDate || '').slice(0, 10);
+    if (dt && dt > lastActivityIso) lastActivityIso = dt;
+    const osDt = (o.createdDate || o.deliveredAt || '').slice(0, 10);
+    if (osDt >= latestOsDate && o.device) {
+      latestOsDate = osDt;
+      lastDevice = o.device;
+    }
+  });
+
+  validSales.forEach((v) => {
+    const dt = (v.data || '').slice(0, 10);
+    if (dt && dt > lastActivityIso) lastActivityIso = dt;
+  });
+
+  const lim90 = addDiasIso(todayIsoLocal(), -90);
+  const delta = lastActivityIso ? diasAteIso(lastActivityIso) : null;
+  const daysInactive = delta !== null ? Math.max(0, -delta) : null;
+  const isInactive90d = Boolean(lastActivityIso && lastActivityIso < lim90);
+
+  return {
+    ltv,
+    ordersCount,
+    deliveredOrdersCount: deliveredOrders.length,
+    validSalesCount: validSales.length,
+    lastActivityIso,
+    daysInactive,
+    isInactive90d,
+    lastDevice,
+  };
+}
+
+// ---------- Etapa 7: Financeiro em 3 Camadas, Cofre de Garantia & Equilíbrio 90d (v17) ----------
+
+export type FinancePeriodKey = 'mes' | 'ant' | 'all';
+
+const round2 = (x: number) => Math.round((Number(x) || 0) * 100) / 100;
+
+const normFin = (s: string) =>
+  String(s || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase();
+
+export function resolveTransactionIsoDate(tx: Pick<CashTransaction, 'isoDate' | 'updatedAt'>): string {
+  if (tx.isoDate && /^\d{4}-\d{2}-\d{2}/.test(tx.isoDate)) {
+    return tx.isoDate.slice(0, 10);
+  }
+  if (typeof tx.updatedAt === 'number' && tx.updatedAt > 0) {
+    const d = new Date(tx.updatedAt);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+      d.getDate()
+    ).padStart(2, '0')}`;
+  }
+  return todayIsoLocal();
+}
+
+/**
+ * `recLiqOS(o)`: receita líquida de serviço + itens - desconto (sem taxa de entrega).
+ */
+export function resolveOrderServiceNetRevenue(
+  o: Pick<ServiceOrder, 'servicePrice' | 'partsPrice' | 'extraItems' | 'discount'>
+): number {
+  const extraRec = (o.extraItems || []).reduce(
+    (sum, x) => sum + (Number(x.q) || 0) * (Number(x.v) || 0),
+    0
+  );
+  return Math.max(
+    0,
+    round2(
+      (Number(o.servicePrice) || 0) +
+        (Number(o.partsPrice) || 0) +
+        extraRec -
+        (Number(o.discount) || 0)
+    )
+  );
+}
+
+/**
+ * `baseRec(o)`: parte proporcional já paga correspondente a serviço + itens - desconto (exclui frete de entrega).
+ */
+export function resolveOrderBaseRec(o: ServiceOrder): number {
+  const t = calcOrderTotalAmount(o);
+  const r = resolveOrderServiceNetRevenue(o);
+  const paid = Math.max(0, Number(o.paidAmount) || 0);
+  return round2(paid * (t > 0 ? Math.max(0, r) / t : 1));
+}
+
+/**
+ * `cpOS(o)`: Envelope 1 — peça (se não fornecida pelo cliente) + frete da peça + consumíveis + custo dos itens extras.
+ */
+export function resolveOrderPartsAndConsumablesCost(
+  o: ServiceOrder,
+  parts: PartItem[]
+): number {
+  const partCost = o.clientSuppliedPart ? 0 : Math.max(0, Number(o.partCost) || 0);
+  const partFreight = o.clientSuppliedPart ? 0 : Math.max(0, Number(o.partFreight) || 0);
+  const consumables = Math.max(0, Number(o.consumables) || 0);
+  const itemsCost = (o.extraItems || []).reduce((sum, x) => {
+    const q = Math.max(0, Number(x.q) || 0);
+    const unitCost =
+      x.c !== undefined
+        ? Math.max(0, Number(x.c) || 0)
+        : Math.max(0, Number(parts.find((p) => p.id === x.p)?.costPrice) || 0);
+    return sum + q * unitCost;
+  }, 0);
+  return round2(partCost + partFreight + consumables + itemsCost);
+}
+
+/**
+ * `finRef(x)`: identifica devoluções e estornos que abatem o faturamento bruto, e não contam como despesa paga.
+ */
+export function isRefundOrReversalTx(tx: Pick<CashTransaction, 'kind' | 'title'>): boolean {
+  return (
+    tx.kind === 'dev' ||
+    tx.kind === 'estSinal' ||
+    /^Estorno da venda/.test(tx.title || '')
+  );
+}
+
+export type ExpenseClassKey = 'gar' | 'est' | 'pec' | 'fer' | 'out';
+
+/**
+ * `finCls(x)`: classifica uma saída paga em Garantia (`gar`), Estrutura fixa (`est`), Peças (`pec`), Ferramentas (`fer`) ou Outros (`out`).
+ */
+export function classifyExpenseTx(
+  tx: Pick<CashTransaction, 'id' | 'kind' | 'tag' | 'channel'>
+): ExpenseClassKey {
+  const tagNorm = normFin(tx.tag);
+  if (tx.kind === 'gar' || tagNorm === 'garantia') return 'gar';
+  if (
+    String(tx.id).startsWith('fx_') ||
+    tx.channel === 'Fixo' ||
+    tagNorm === 'aluguel' ||
+    tagNorm === 'internet' ||
+    tagNorm === 'fixo' ||
+    tagNorm === 'estrutura fixa'
+  ) {
+    return 'est';
+  }
+  if (
+    tx.kind === 'compra' ||
+    tx.channel === 'Fornecedores' ||
+    tagNorm === 'pecas' ||
+    tagNorm === 'pecas/insumos' ||
+    tagNorm === 'pdv-pecas'
+  ) {
+    return 'pec';
+  }
+  if (tagNorm === 'ferramentas') return 'fer';
+  return 'out';
+}
+
+export interface CofreGarantiaResult {
+  pct: number;
+  base: number;
+  acc: number;
+  gastos: number;
+  saldo: number;
+  totalCashBalance: number;
+  disp: number;
+}
+
+/**
+ * `cofre()` v17: Cofre global da Reserva de Garantia sobre OS entregues menos saídas k='gar'.
+ * Lucro Líquido Disponível (`disp`) = saldo total de caixa − saldo da reserva de garantia (sem dupla contagem).
+ */
+export function calcCofreReservaGarantia(
+  orders: ServiceOrder[],
+  transactions: CashTransaction[],
+  cfg: Pick<LabConfig, 'reservaGar'>
+): CofreGarantiaResult {
+  const pct = Math.max(0, (Number(cfg.reservaGar) || 0) * 100);
+  const base = round2(
+    (orders || [])
+      .filter((o) => o.status === 'Entregue')
+      .reduce((sum, o) => sum + resolveOrderBaseRec(o), 0)
+  );
+  const acc = Math.round(base * pct) / 100;
+  const gastos = round2(
+    (transactions || [])
+      .filter((tx) => tx.type === 'out' && classifyExpenseTx(tx) === 'gar')
+      .reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0)
+  );
+  const totalIn = (transactions || [])
+    .filter((tx) => tx.type === 'in')
+    .reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0);
+  const totalOut = (transactions || [])
+    .filter((tx) => tx.type === 'out')
+    .reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0);
+  const totalCashBalance = round2(totalIn - totalOut);
+  const saldo = round2(acc - gastos);
+  const disp = round2(totalCashBalance - saldo);
+  return {
+    pct,
+    base,
+    acc,
+    gastos,
+    saldo,
+    totalCashBalance,
+    disp,
+  };
+}
+
+export interface Equilibrio90dResult {
+  fixos: number;
+  meta: number;
+  ticket: number;
+  custoVar: number;
+  contrib: number;
+  necessarias: number | null;
+  feitas: number;
+  faltam: number | null;
+  faturamento: number;
+  metaFat: number;
+  estimado: boolean;
+  sampleCount90d: number;
+  cabem: number | null;
+  horasFat: number;
+  avgHours: number;
+  reserva: number;
+}
+
+/**
+ * `equilibrio()` v17: Termômetro do ponto de equilíbrio com base nos últimos 90 dias (fallback ticketEsp/custoEsp quando <10 OS).
+ */
+export function calcEquilibrio90d(
+  orders: ServiceOrder[],
+  transactions: CashTransaction[],
+  parts: PartItem[],
+  cfg: LabConfig,
+  fixosList: FixedExpenseItem[]
+): Equilibrio90dResult {
+  const hoje = todayIsoLocal();
+  const mes = hoje.slice(0, 7);
+  const lim = addDiasIso(hoje, -90);
+  const eff = calcEffectivePricingFromConfig(cfg, fixosList);
+  const fixos = eff.fixedCosts;
+  const meta = round2(fixos + (Number(cfg.proLabore) || 0));
+
+  const delivered90 = (orders || []).filter((o) => {
+    if (o.status !== 'Entregue' || (Number(o.servicePrice) || 0) <= 0) return false;
+    const dt = (o.deliveredAt || o.createdDate || '').slice(0, 10);
+    return dt >= lim;
+  });
+  const n = delivered90.length;
+  const estimado = n < 10 && (Number(cfg.ticketEsp) || 0) > 0;
+
+  let tk = 0;
+  let cv = 0;
+  let mh = 1;
+  if (estimado) {
+    tk = Number(cfg.ticketEsp) || 0;
+    cv = Number(cfg.custoEsp) || 0;
+    mh = 1;
+  } else if (n > 0) {
+    tk = delivered90.reduce((sum, o) => sum + resolveOrderServiceNetRevenue(o), 0) / n;
+    cv = delivered90.reduce((sum, o) => sum + resolveOrderPartsAndConsumablesCost(o, parts), 0) / n;
+    mh = delivered90.reduce((sum, o) => sum + (Number(o.estimatedHours) || 0), 0) / n;
+  }
+
+  const taxa = eff.totalRetentionPct / 100;
+  const contrib = tk * (1 - taxa) - cv;
+  const necessarias = contrib > 0 ? Math.ceil(meta / contrib) : null;
+  const feitas = (orders || []).filter(
+    (o) => o.status === 'Entregue' && (o.deliveredAt || o.createdDate || '').slice(0, 7) === mes
+  ).length;
+  const faltam = necessarias === null ? null : Math.max(0, necessarias - feitas);
+
+  const faturamento = round2(
+    (transactions || [])
+      .filter(
+        (x) =>
+          resolveTransactionIsoDate(x).slice(0, 7) === mes &&
+          (x.type === 'in' || isRefundOrReversalTx(x))
+      )
+      .reduce((sum, x) => sum + (x.type === 'in' ? Number(x.amount) || 0 : -(Number(x.amount) || 0)), 0)
+  );
+  const horasFat = eff.metrics.billableHours;
+  const cabem = mh > 0 ? Math.floor(horasFat / mh) : null;
+  const reserva = round2(Math.max(0, faturamento) * (Number(cfg.reservaCap) || 0));
+
+  return {
+    fixos,
+    meta,
+    ticket: round2(tk),
+    custoVar: round2(cv),
+    contrib: round2(contrib),
+    necessarias,
+    feitas,
+    faltam,
+    faturamento,
+    metaFat: Number(cfg.metaMes) || 0,
+    estimado,
+    sampleCount90d: n,
+    cabem,
+    horasFat,
+    avgHours: mh,
+    reserva,
+  };
+}
+
+export interface FinancePeriodMeta {
+  key: FinancePeriodKey;
+  ym: string;
+  all: boolean;
+  label: string;
+  matchesIso: (iso?: string) => boolean;
+}
+
+export function getFinancePeriodMeta(key: FinancePeriodKey): FinancePeriodMeta {
+  const nowIso = todayIsoLocal();
+  let ym = nowIso.slice(0, 7);
+  if (key === 'ant') {
+    let y = Number(ym.slice(0, 4));
+    let m = Number(ym.slice(5, 7)) - 1;
+    if (m < 1) {
+      m = 12;
+      y -= 1;
+    }
+    ym = `${y}-${String(m).padStart(2, '0')}`;
+  }
+  const fMes = `${ym.slice(5, 7)}/${ym.slice(0, 4)}`;
+  return {
+    key,
+    ym,
+    all: key === 'all',
+    label:
+      key === 'all'
+        ? 'Todo o período'
+        : `${key === 'ant' ? 'Mês anterior' : 'Mês atual'} · ${fMes}`,
+    matchesIso: (iso?: string) => key === 'all' || String(iso || '').slice(0, 7) === ym,
+  };
+}
+
+export interface FinLayersResult {
+  per: FinancePeriodMeta;
+  filteredTxs: CashTransaction[];
+  D: Record<ExpenseClassKey, number>;
+  bruto: number;
+  dev: number;
+  sai: number;
+  desp: number;
+  saldoOp: number;
+  deliveredOrders: ServiceOrder[];
+  n: number;
+  Rp: number;
+  env1: number;
+  prol: number;
+  tPag: number;
+  acc2: number;
+  ret3: number;
+  gastoGar: number;
+  usoFer: number;
+  saldo3: number;
+  saldo2: number;
+  disp: number;
+  cofre: CofreGarantiaResult;
+  lucro: number;
+  meta: number;
+  contrib: number;
+  cob: number;
+  avg: number;
+  falta: number | null;
+  pGar: number;
+  pGiro: number;
+  pPag: number;
+  equilibrio: Equilibrio90dResult;
+}
+
+/**
+ * `finCalc()` v17: Motor financeiro completo em 3 camadas:
+ * Camada 1 = Fluxo Operacional de Caixa (pela data do lançamento)
+ * Camada 2 = Envelopes Carimbados & Cofre de Garantia (OS entregues no período + acumulado global)
+ * Camada 3 = Resultado Real (após pró-labore e envelopes) & Termômetro de Equilíbrio
+ */
+export function calcFinLayers(
+  params: {
+    orders: ServiceOrder[];
+    transactions: CashTransaction[];
+    parts: PartItem[];
+    cfg: LabConfig;
+    fixos: FixedExpenseItem[];
+  },
+  periodKey: FinancePeriodKey = 'mes'
+): FinLayersResult {
+  const { orders, transactions, parts, cfg, fixos } = params;
+  const per = getFinancePeriodMeta(periodKey);
+  const eff = calcEffectivePricingFromConfig(cfg, fixos);
+
+  const pGar = Math.max(0, Number(cfg.reservaGar) || 0);
+  const pGiro = Math.max(0, Number(cfg.reservaCap) || 0);
+  const pPag = Math.max(0, Number(cfg.taxaPag) || 0);
+
+  const filteredTxs = (transactions || []).filter((tx) =>
+    per.matchesIso(resolveTransactionIsoDate(tx))
+  );
+  const En = filteredTxs.filter((tx) => tx.type === 'in');
+  const Sa = filteredTxs.filter((tx) => tx.type === 'out');
+
+  const D: Record<ExpenseClassKey, number> = {
+    pec: 0,
+    est: 0,
+    fer: 0,
+    out: 0,
+    gar: 0,
+  };
+  Sa.filter((tx) => !isRefundOrReversalTx(tx)).forEach((tx) => {
+    const cls = classifyExpenseTx(tx);
+    D[cls] = round2(D[cls] + (Number(tx.amount) || 0));
+  });
+
+  const bruto = round2(En.reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0));
+  const dev = round2(
+    Sa.filter(isRefundOrReversalTx).reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0)
+  );
+  const sai = round2(Sa.reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0));
+  const desp = round2(D.pec + D.est + D.fer + D.out + D.gar);
+  const saldoOp = round2(bruto - sai);
+
+  const deliveredOrders = (orders || []).filter(
+    (o) => o.status === 'Entregue' && per.matchesIso(o.deliveredAt || o.createdDate || '')
+  );
+  const Rp = round2(deliveredOrders.reduce((sum, o) => sum + resolveOrderBaseRec(o), 0));
+  const env1 = round2(
+    deliveredOrders.reduce((sum, o) => sum + resolveOrderPartsAndConsumablesCost(o, parts), 0)
+  );
+  const prol = round2(
+    deliveredOrders.reduce((sum, o) => {
+      const h = Math.max(0, Number(o.estimatedHours) || 0);
+      const rate =
+        o.snapHourlyRate !== undefined && o.snapHourlyRate !== null
+          ? Number(o.snapHourlyRate)
+          : eff.hourlyRate;
+      return sum + h * rate;
+    }, 0)
+  );
+
+  const tPag = round2(Rp * pPag);
+  const acc2 = round2(Rp * pGar);
+  const ret3 = round2(Rp * pGiro);
+  const gastoGar = round2(D.gar);
+
+  const allDelivered = (orders || []).filter((o) => o.status === 'Entregue');
+  const ferAll = round2(
+    (transactions || [])
+      .filter(
+        (tx) =>
+          tx.type === 'out' && !isRefundOrReversalTx(tx) && classifyExpenseTx(tx) === 'fer'
+      )
+      .reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0)
+  );
+  const saldo3 = round2(
+    round2(allDelivered.reduce((sum, o) => sum + resolveOrderBaseRec(o), 0) * pGiro) - ferAll
+  );
+
+  const cofre = calcCofreReservaGarantia(orders, transactions, cfg);
+  const lucro = round2(Rp - env1 - tPag - (D.est + D.out) - prol - acc2 - ret3);
+
+  const eq = calcEquilibrio90d(orders, transactions, parts, cfg, fixos);
+  const meta = round2(eff.fixedCosts + (Number(cfg.proLabore) || 0));
+  const contrib = round2(Rp - env1 - tPag - acc2);
+  const n = deliveredOrders.length;
+  const avg = n > 0 ? contrib / n : eq.contrib;
+  const falta = avg > 0 ? Math.ceil(Math.max(0, meta - contrib) / avg - 1e-9) : null;
+
+  return {
+    per,
+    filteredTxs,
+    D,
+    bruto,
+    dev,
+    sai,
+    desp,
+    saldoOp,
+    deliveredOrders,
+    n,
+    Rp,
+    env1,
+    prol,
+    tPag,
+    acc2,
+    ret3,
+    gastoGar,
+    usoFer: D.fer,
+    saldo3,
+    saldo2: cofre.saldo,
+    disp: cofre.disp,
+    cofre,
+    lucro,
+    meta,
+    contrib,
+    cob: meta > 0 ? contrib / meta : 0,
+    avg,
+    falta,
+    pGar,
+    pGiro,
+    pPag,
+    equilibrio: eq,
+  };
+}
+
+/**
+ * `taxaAprov()` v17: aprovados / (aprovados + cancelados)
+ */
+export function calcOrderApprovalRate(orders: ServiceOrder[]): number | null {
+  const approvedSet = new Set([
+    'Aprovado',
+    'Aprovado / Fila',
+    'Aguardando Peça',
+    'Em reparo',
+    'Em Reparo SMD',
+    'Pronto',
+    'Pronto Retirada',
+    'Entregue',
+  ]);
+  const a = (orders || []).filter((o) => approvedSet.has(o.status)).length;
+  const r = (orders || []).filter((o) => o.status === 'Cancelado').length;
+  return a + r > 0 ? a / (a + r) : null;
+}
+
+
+
 

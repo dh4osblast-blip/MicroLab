@@ -7,6 +7,7 @@ import {
   CloudOff,
   Database,
   Download,
+  Edit3,
   FileText,
   KeyRound,
   Lock,
@@ -27,7 +28,7 @@ import {
   WifiOff,
   Wrench,
 } from 'lucide-react';
-import { UserRole } from '../types/lab';
+import { ServiceCatalogItem, UserRole } from '../types/lab';
 import { formatBRL, useLabStore } from '../store/useLabStore';
 import {
   FIXED_SHORTCUTS,
@@ -173,6 +174,9 @@ export const SettingsView: React.FC = () => {
     deleteTechnician,
     addSeller,
     deleteSeller,
+    addServiceCatalog,
+    updateServiceCatalog,
+    deleteServiceCatalog,
     configureFirebase,
     clearFirebaseConfig,
     requestCloudSignIn,
@@ -245,6 +249,18 @@ export const SettingsView: React.FC = () => {
   const [newTechTel, setNewTechTel] = useState('');
   const [newSellerName, setNewSellerName] = useState('');
   const [newSellerTel, setNewSellerTel] = useState('');
+
+  // Catálogo de Serviços (`servicos`) CRUD state
+  const [editingServiceId, setEditingServiceId] = useState<string | null>(null);
+  const [svcNome, setSvcNome] = useState('');
+  const [svcCat, setSvcCat] = useState('Hardware / Módulo');
+  const [svcTempo, setSvcTempo] = useState('1');
+  const [svcCons, setSvcCons] = useState('3');
+  const [svcPeca, setSvcPeca] = useState('');
+  const [svcGar, setSvcGar] = useState('90');
+  const [svcMercado, setSvcMercado] = useState('');
+  const [confirmDeleteSvcId, setConfirmDeleteSvcId] = useState<string | null>(null);
+  const [svcFeedback, setSvcFeedback] = useState('');
 
   const handleSaveFirebaseConfig = (e: React.FormEvent) => {
     e.preventDefault();
@@ -459,6 +475,51 @@ export const SettingsView: React.FC = () => {
     addSeller({ nome: newSellerName.trim(), tel: newSellerTel.trim() });
     setNewSellerName('');
     setNewSellerTel('');
+  };
+
+  const resetServiceForm = () => {
+    setEditingServiceId(null);
+    setSvcNome('');
+    setSvcCat('Hardware / Módulo');
+    setSvcTempo('1');
+    setSvcCons('3');
+    setSvcPeca('');
+    setSvcGar('90');
+    setSvcMercado('');
+  };
+
+  const handleEditService = (item: ServiceCatalogItem) => {
+    setEditingServiceId(item.id);
+    setSvcNome(item.nome);
+    setSvcCat(item.cat || 'Hardware / Módulo');
+    setSvcTempo(String(item.tempo ?? 1));
+    setSvcCons(String(item.cons ?? 0));
+    setSvcPeca(item.peca || '');
+    setSvcGar(item.gar || '');
+    setSvcMercado(item.mercado > 0 ? String(item.mercado) : '');
+  };
+
+  const handleSaveService = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!svcNome.trim()) return;
+    const payload: Omit<ServiceCatalogItem, 'id'> = {
+      nome: svcNome.trim(),
+      cat: svcCat.trim() || 'Hardware / Módulo',
+      tempo: Math.max(0.25, Number(svcTempo.replace(',', '.')) || 1),
+      cons: Math.max(0, Number(svcCons.replace(',', '.')) || 0),
+      peca: svcPeca.trim(),
+      gar: svcGar.trim() || String(state.cfg.garantiaDias || 90),
+      mercado: Math.max(0, Number(svcMercado.replace(',', '.')) || 0),
+    };
+    if (editingServiceId) {
+      updateServiceCatalog(editingServiceId, payload);
+      setSvcFeedback(`Serviço "${payload.nome}" atualizado.`);
+    } else {
+      addServiceCatalog(payload);
+      setSvcFeedback(`Serviço "${payload.nome}" adicionado ao catálogo.`);
+    }
+    resetServiceForm();
+    window.setTimeout(() => setSvcFeedback(''), 3500);
   };
 
   if (currentUser?.nivel !== 'Administrador') {
@@ -1962,6 +2023,212 @@ export const SettingsView: React.FC = () => {
               </button>
             </form>
           </div>
+        </div>
+      </div>
+
+      {/* Catálogo de Serviços (`servicos`) CRUD Card */}
+      <div className="rounded-2xl bg-white p-5 border border-[#D9E0EC] space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Wrench className="w-5 h-5 text-[#0056ab]" />
+            <div>
+              <h2 className="text-sm font-bold text-[#091b36]">
+                Catálogo de Serviços ({state.servicos.length})
+              </h2>
+              <p className="text-[11px] text-[#727784]">
+                Presets utilizados automaticamente no Check-in, Nova OS e Simulador de Orçamento
+              </p>
+            </div>
+          </div>
+          {editingServiceId && (
+            <button
+              type="button"
+              onClick={resetServiceForm}
+              className="rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-1 text-[11px] font-semibold text-[#414752] cursor-pointer self-start"
+            >
+              Cancelar Edição
+            </button>
+          )}
+        </div>
+
+        {svcFeedback && (
+          <div className="rounded-xl bg-[#DCFCE7] border border-[#16A34A]/30 px-3.5 py-2 text-xs text-[#16A34A] font-medium flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span>{svcFeedback}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleSaveService} className="rounded-xl bg-[#F3F6FB] border border-[#D9E0EC] p-3.5 space-y-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+            <div className="sm:col-span-5">
+              <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                Nome do serviço *
+              </label>
+              <input
+                required
+                value={svcNome}
+                onChange={(e) => setSvcNome(e.target.value)}
+                placeholder="Ex: Troca de conector de carga"
+                className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs"
+              />
+            </div>
+            <div className="sm:col-span-4">
+              <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                Categoria
+              </label>
+              <input
+                value={svcCat}
+                onChange={(e) => setSvcCat(e.target.value)}
+                placeholder="Ex: Placa / Microssolda"
+                className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs"
+              />
+            </div>
+            <div className="sm:col-span-3">
+              <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                Peça padrão (opcional)
+              </label>
+              <input
+                value={svcPeca}
+                onChange={(e) => setSvcPeca(e.target.value)}
+                placeholder="Ex: Tela / Conector"
+                className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-12 gap-2 items-end">
+            <div className="sm:col-span-2">
+              <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                Horas (h)
+              </label>
+              <input
+                type="number"
+                step="0.25"
+                min="0.25"
+                value={svcTempo}
+                onChange={(e) => setSvcTempo(e.target.value)}
+                className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs tabular-nums"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                Insumo (R$)
+              </label>
+              <input
+                type="number"
+                step="0.5"
+                min="0"
+                value={svcCons}
+                onChange={(e) => setSvcCons(e.target.value)}
+                className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs tabular-nums"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                Garantia (dias)
+              </label>
+              <input
+                value={svcGar}
+                onChange={(e) => setSvcGar(e.target.value)}
+                placeholder="90"
+                className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs tabular-nums"
+              />
+            </div>
+            <div className="sm:col-span-3">
+              <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                Ref. mercado (R$)
+              </label>
+              <input
+                type="number"
+                step="1"
+                min="0"
+                value={svcMercado}
+                onChange={(e) => setSvcMercado(e.target.value)}
+                placeholder="0"
+                className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs tabular-nums"
+              />
+            </div>
+            <div className="col-span-2 sm:col-span-3">
+              <button
+                type="submit"
+                className="w-full rounded-lg bg-[#0056ab] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#1b6fd1] cursor-pointer"
+              >
+                {editingServiceId ? 'Salvar Alteração' : 'Adicionar Serviço'}
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <div className="divide-y divide-[#D9E0EC] rounded-xl border border-[#D9E0EC]">
+          {state.servicos.map((svc) => (
+            <div key={svc.id} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <strong className="text-[#091b36]">{svc.nome}</strong>
+                  <span className="px-2 py-0.5 rounded bg-[#EAF2FD] text-[#0056ab] text-[10px] font-semibold">
+                    {svc.cat}
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#727784] tabular-nums mt-0.5">
+                  {svc.tempo}h bancada · Insumo {formatBRL(svc.cons)}
+                  {svc.gar ? ` · Garantia ${svc.gar}d` : ''}
+                  {svc.mercado > 0 ? ` · Mercado ${formatBRL(svc.mercado)}` : ''}
+                  {svc.peca ? ` · Peça: ${svc.peca}` : ''}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                {confirmDeleteSvcId === svc.id ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        deleteServiceCatalog(svc.id);
+                        setConfirmDeleteSvcId(null);
+                        if (editingServiceId === svc.id) resetServiceForm();
+                        setSvcFeedback(`Serviço "${svc.nome}" removido.`);
+                        window.setTimeout(() => setSvcFeedback(''), 3500);
+                      }}
+                      className="rounded-lg bg-[#DC2626] px-2.5 py-1 text-[11px] font-bold text-white cursor-pointer"
+                    >
+                      Confirmar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteSvcId(null)}
+                      className="rounded-lg border border-[#D9E0EC] bg-white px-2 py-1 text-[11px] text-[#414752] cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => handleEditService(svc)}
+                      title="Editar serviço"
+                      className="p-1.5 rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] text-[#414752] hover:bg-[#EAF2FD] hover:text-[#0056ab] cursor-pointer"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDeleteSvcId(svc.id)}
+                      title="Excluir serviço"
+                      className="p-1.5 rounded-lg border border-[#FEE2E2] bg-[#FEE2E2]/40 text-[#DC2626] hover:bg-[#FEE2E2] cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+          {state.servicos.length === 0 && (
+            <div className="p-4 text-center text-xs text-[#727784]">
+              Nenhum serviço cadastrado no catálogo.
+            </div>
+          )}
         </div>
       </div>
 

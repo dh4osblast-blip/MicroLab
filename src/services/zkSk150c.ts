@@ -217,15 +217,38 @@ export async function connectWebBluetooth(onUnexpectedDisconnect: () => void): P
     );
   }
   const device = await navigator.bluetooth.requestDevice({
-    filters: [{ services: [0xfff0] }, { namePrefix: 'Wuzhi' }],
-    optionalServices: [0xfff0],
+    filters: [{ services: [0xfff0] }, { services: [0xffe0] }, { namePrefix: 'Wuzhi' }],
+    optionalServices: [0xfff0, 0xffe0],
   });
   if (!device.gatt) {
     throw new Error('Dispositivo BLE sem servidor GATT disponível.');
   }
   const server = await device.gatt.connect();
-  const service = await server.getPrimaryService(0xfff0);
-  const ch = await service.getCharacteristic(0xfff1);
+
+  let service: BluetoothRemoteGATTService;
+  let notifyCharUuid = 0xfff1;
+  let writeFallbackUuid = 0xfff2;
+
+  try {
+    service = await server.getPrimaryService(0xfff0);
+    notifyCharUuid = 0xfff1;
+    writeFallbackUuid = 0xfff2;
+  } catch {
+    service = await server.getPrimaryService(0xffe0);
+    notifyCharUuid = 0xffe1;
+    writeFallbackUuid = 0xffe2;
+  }
+
+  const ch = await service.getCharacteristic(notifyCharUuid);
+  let writeCh: BluetoothRemoteGATTCharacteristic = ch;
+  if (ch.properties && !ch.properties.writeWithoutResponse && !ch.properties.write) {
+    try {
+      writeCh = await service.getCharacteristic(writeFallbackUuid);
+    } catch {
+      writeCh = ch;
+    }
+  }
+
   const rx: number[] = [];
 
   const handleNotify = (ev: Event) => {
@@ -252,10 +275,14 @@ export async function connectWebBluetooth(onUnexpectedDisconnect: () => void): P
     async write(frame: Uint8Array) {
       for (let i = 0; i < frame.length; i += 20) {
         const chunk = frame.slice(i, i + 20);
-        if (typeof ch.writeValueWithoutResponse === 'function') {
-          await ch.writeValueWithoutResponse(chunk);
-        } else if (typeof ch.writeValue === 'function') {
-          await ch.writeValue(chunk);
+        if (writeCh.properties?.writeWithoutResponse && typeof writeCh.writeValueWithoutResponse === 'function') {
+          await writeCh.writeValueWithoutResponse(chunk);
+        } else if (typeof writeCh.writeValue === 'function') {
+          await writeCh.writeValue(chunk);
+        } else if (typeof writeCh.writeValueWithResponse === 'function') {
+          await writeCh.writeValueWithResponse(chunk);
+        } else if (typeof writeCh.writeValueWithoutResponse === 'function') {
+          await writeCh.writeValueWithoutResponse(chunk);
         }
       }
     },
@@ -522,8 +549,32 @@ export function parseZkRegisters(r: number[], iscale: 100 | 1000): ZkTelemetrySa
 
 export interface EvidenceEvent {
   timestamp: number;
-  kind: 'info' | 'out' | 'prot' | 'fuga' | 'pulso' | 'curto' | 'alto' | 'cmd';
+  kind: 'info' | 'out' | 'prot' | 'fuga' | 'pulso' | 'curto' | 'alto' | 'cmd' | 'cfg';
   text: string;
+  cliText?: string;
+  currentA?: number;
+}
+
+export interface ZkSessionSummary {
+  ini: number;
+  fim: number;
+  via: string;
+  vset: number | null;
+  iset: number | null;
+  n: number;
+  imin: number | null;
+  iavg: number | null;
+  ipk: number | null;
+  vpk: number | null;
+  vavg: number | null;
+  pmax: number | null;
+  pavg: number | null;
+  ms: number;
+  prots: { t: number; nm: string }[];
+  bootPk: number | null;
+  fugaA: number | null;
+  evid: EvidenceEvent[];
+  tl: EvidenceEvent[];
 }
 
 // Limiares de detecção de evidência do laboratório (não são valores de fábrica)
@@ -538,12 +589,33 @@ export const TELEMETRY_THRESHOLDS = {
   janFuga: 6,
 };
 
+const fmtDec = (n: number, dec: number) => n.toFixed(dec).replace('.', ',');
+
 export class ZkSessionTracker {
+  readonly ini: number;
+  fim: number | null = null;
+  via: string;
   events: EvidenceEvent[] = [];
+  prots: { t: number; nm: string }[] = [];
+  bootPk: number | null = null;
+
   private vSet: number | null = null;
   private iSet: number | null = null;
   private out: boolean | null = null;
   private prot = 0;
+  private lastOnTimestamp: number | null = null;
+  private cmdT = 0;
+
+  private onCount = 0;
+  private onMs = 0;
+  private vMax = 0;
+  private vSum = 0;
+  private iMin = Infinity;
+  private iMax = 0;
+  private iSum = 0;
+  private pMax = 0;
+  private pSum = 0;
+
   private onSince = 0;
   private win: Array<{ t: number; i: number }> = [];
   private bootDetected = false;
@@ -555,41 +627,79 @@ export class ZkSessionTracker {
   private ccOffCount = 0;
   private firstOnSample = true;
 
-  private pushEvent(kind: EvidenceEvent['kind'], text: string) {
-    if (this.events.length >= 200) this.events.shift();
-    this.events.push({ timestamp: Date.now(), kind, text });
+  constructor(via = 'Sessão ZK-SK150C') {
+    this.ini = Date.now();
+    this.via = via;
+  }
+
+  private pushEvent(
+    kind: EvidenceEvent['kind'],
+    text: string,
+    extra?: { cliText?: string; currentA?: number }
+  ) {
+    if (this.events.length >= 500) this.events.shift();
+    this.events.push({ timestamp: Date.now(), kind, text, ...extra });
+  }
+
+  recordCommand(kind: 'cmd' | 'cfg', text: string) {
+    this.cmdT = Date.now();
+    this.pushEvent(kind, text);
+  }
+
+  markClosed(emergency = false) {
+    if (this.fim === null) {
+      this.fim = Date.now();
+      this.pushEvent('info', `Conexão encerrada${emergency ? ' (emergência)' : ''}`);
+    }
   }
 
   feed(sample: ZkTelemetrySample, iscale: 100 | 1000) {
     const t = sample.timestamp;
     const dec = iscale === 1000 ? 3 : 2;
     if (this.vSet === null) {
-      this.pushEvent('info', `Sessão iniciada: V-SET ${sample.vSet.toFixed(2)}V · I-SET ${sample.iSet.toFixed(dec)}A`);
+      this.pushEvent(
+        'info',
+        `Início do registro: V-SET ${fmtDec(sample.vSet, 2)} V · I-SET ${fmtDec(sample.iSet, dec)} A`
+      );
+    } else if (
+      (sample.vSet !== this.vSet || sample.iSet !== this.iSet) &&
+      t - this.cmdT > 3000
+    ) {
+      this.pushEvent(
+        'cmd',
+        `V-SET/I-SET alterados na fonte: ${fmtDec(sample.vSet, 2)} V · ${fmtDec(sample.iSet, dec)} A`
+      );
     }
     this.vSet = sample.vSet;
     this.iSet = sample.iSet;
 
     if (this.out === null) {
       this.out = sample.outputOn;
-      if (sample.outputOn) this.pushEvent('out', 'Saída já estava ligada ao conectar.');
+      if (sample.outputOn) this.pushEvent('out', 'Saída já estava ligada ao conectar');
     } else if (sample.outputOn !== this.out) {
       this.out = sample.outputOn;
-      this.pushEvent('out', sample.outputOn ? 'Saída ligada (OUTPUT ON)' : 'Saída desligada (OUTPUT OFF)');
+      this.pushEvent('out', sample.outputOn ? 'Saída ligada' : 'Saída desligada');
     }
 
     if (sample.protCode !== 0 && sample.protCode !== this.prot) {
+      this.prots.push({ t, nm: sample.protLabel });
       this.pushEvent('prot', `Proteção acionada: ${sample.protLabel}`);
       if ((sample.protCode === 2 || sample.protCode === 3) && !this.curtoDetected) {
         this.curtoDetected = true;
         this.pushEvent(
           'curto',
-          `Disparo de ${sample.protLabel} em ${sample.iOut.toFixed(dec)}A @ ${sample.vOut.toFixed(2)}V.`
+          `Disparo de ${sample.protLabel} com ${fmtDec(sample.iOut, dec)} A e ${fmtDec(sample.vOut, 2)} V.`,
+          {
+            cliText:
+              'A fonte desligou a saída por proteção de sobrecarga. Isso pode indicar um curto ou consumo acima do esperado e precisa de avaliação.',
+          }
         );
       }
     }
     this.prot = sample.protCode;
 
     if (!sample.outputOn) {
+      this.lastOnTimestamp = null;
       this.win = [];
       this.bootDetected = false;
       this.fugaDetected = false;
@@ -602,18 +712,32 @@ export class ZkSessionTracker {
       return;
     }
 
+    this.onCount += 1;
+    if (this.lastOnTimestamp !== null) {
+      this.onMs += Math.min(t - this.lastOnTimestamp, 2000);
+    }
+    this.lastOnTimestamp = t;
+    this.vMax = Math.max(this.vMax, sample.vOut);
+    this.vSum += sample.vOut;
+    this.iMin = Math.min(this.iMin, sample.iOut);
+    this.iMax = Math.max(this.iMax, sample.iOut);
+    this.iSum += sample.iOut;
+    this.pMax = Math.max(this.pMax, sample.pOut);
+    this.pSum += sample.pOut;
+
     if (!this.onSince) this.onSince = t;
     this.win.push({ t, i: sample.iOut });
     if (this.win.length > 40) this.win.shift();
 
-    const ccNow = sample.isCC && sample.iSet > 0 && sample.iOut >= TELEMETRY_THRESHOLDS.ccRatio * sample.iSet;
+    const ccNow =
+      sample.isCC && sample.iSet > 0 && sample.iOut >= TELEMETRY_THRESHOLDS.ccRatio * sample.iSet;
 
     if (!this.bootDetected) {
       if (this.firstOnSample) {
         if (sample.iOut >= TELEMETRY_THRESHOLDS.pulsoA) {
           this.bootDetected = true;
           this.bootTime = t;
-          this.pushEvent('pulso', `Consumo alto imediato ao ligar saída: ${sample.iOut.toFixed(dec)}A`);
+          this.pushEvent('pulso', `Consumo já alto ao ligar a saída: ${fmtDec(sample.iOut, dec)} A`);
         }
       } else {
         const prevSlice = this.win.slice(-5, -1);
@@ -624,7 +748,7 @@ export class ZkSessionTracker {
             this.bootTime = t;
             this.pushEvent(
               'pulso',
-              `Pulso de boot detectado: ${sample.iOut.toFixed(dec)}A (anterior ${avgPrev.toFixed(dec)}A)`
+              `Pulso de consumo: ${fmtDec(sample.iOut, dec)} A (antes ${fmtDec(avgPrev, dec)} A)`
             );
           }
         }
@@ -632,17 +756,31 @@ export class ZkSessionTracker {
     }
     this.firstOnSample = false;
 
+    if (this.bootDetected && this.bootTime && t - this.bootTime <= 10000) {
+      this.bootPk = Math.max(this.bootPk || 0, sample.iOut);
+    }
+
     if (!this.bootDetected && !this.fugaDetected && !ccNow) {
       const fWin = this.win.slice(-TELEMETRY_THRESHOLDS.janFuga);
       if (fWin.length >= TELEMETRY_THRESHOLDS.janFuga && t - this.onSince >= 2000) {
         const vals = fWin.map((x) => x.i);
         const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
         const spread = Math.max(...vals) - Math.min(...vals);
-        if (avg > TELEMETRY_THRESHOLDS.fugaA && spread <= Math.max(2 / iscale, TELEMETRY_THRESHOLDS.estavelRatio * avg)) {
+        if (
+          avg > TELEMETRY_THRESHOLDS.fugaA &&
+          spread <= Math.max(2 / iscale, TELEMETRY_THRESHOLDS.estavelRatio * avg)
+        ) {
           this.fugaDetected = true;
+          const fugaMaStr = Math.round(avg * 1000).toString();
           this.pushEvent(
             'fuga',
-            `Fuga pré-power detectada: ${Math.round(avg * 1000)} mA estáveis (alerta > 20 mA)`
+            `Corrente estabilizou em ${fugaMaStr} mA com a saída ligada, antes de qualquer pulso de boot (limite de alerta: ${Math.round(
+              TELEMETRY_THRESHOLDS.fugaA * 1000
+            )} mA).`,
+            {
+              currentA: avg,
+              cliText: `Com o aparelho sem acionar o botão de ligar, o consumo se manteve em cerca de ${fugaMaStr} mA. Isso costuma indicar algo consumindo energia em espera e pode precisar de avaliação.`,
+            }
           );
         }
       }
@@ -660,9 +798,23 @@ export class ZkSessionTracker {
     }
     if (this.ccCount >= 2 && !this.curtoDetected) {
       this.curtoDetected = true;
+      const vDropTxt =
+        sample.vSet > 0 && sample.vOut < 0.9 * sample.vSet
+          ? `; tensão caiu para ${fmtDec(sample.vOut, 2)} V (V-SET ${fmtDec(sample.vSet, 2)} V)`
+          : '';
       this.pushEvent(
         'curto',
-        `Limitação CC atingida (${sample.iOut.toFixed(dec)}A / I-SET ${sample.iSet.toFixed(dec)}A) · V caiu para ${sample.vOut.toFixed(2)}V.`
+        `Corrente chegou ao limite I-SET (${fmtDec(sample.iOut, dec)} A de ${fmtDec(
+          sample.iSet,
+          dec
+        )} A) e a fonte entrou em modo CC${vDropTxt}.`,
+        {
+          currentA: sample.iOut,
+          cliText: `A corrente subiu até o limite configurado na fonte (${fmtDec(
+            sample.iSet,
+            dec
+          )} A). Isso pode indicar um curto ou sobrecarga e precisa de avaliação.`,
+        }
       );
     }
 
@@ -672,6 +824,7 @@ export class ZkSessionTracker {
         const vals = aWin.map((x) => x.i);
         const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
         const spread = Math.max(...vals) - Math.min(...vals);
+        const durSec = Math.round((aWin[aWin.length - 1].t - aWin[0].t) / 1000);
         if (
           !this.altoDetected &&
           t - this.onSince >= TELEMETRY_THRESHOLDS.estabSec * 1000 &&
@@ -680,11 +833,53 @@ export class ZkSessionTracker {
           spread <= 0.35 * avg
         ) {
           this.altoDetected = true;
-          this.pushEvent('alto', `Consumo sustentado elevado: ${avg.toFixed(dec)}A após estabilização.`);
+          this.pushEvent(
+            'alto',
+            `Corrente média de ${fmtDec(avg, dec)} A nos últimos ${durSec} s, com o sistema já estabilizado (limite de alerta: ${fmtDec(
+              TELEMETRY_THRESHOLDS.altoA,
+              3
+            )} A).`,
+            {
+              currentA: avg,
+              cliText: `Depois de estabilizar, o consumo ficou em cerca de ${fmtDec(
+                avg,
+                dec
+              )} A de forma contínua, acima do nosso limite de alerta (${fmtDec(
+                TELEMETRY_THRESHOLDS.altoA,
+                3
+              )} A). Pode indicar algo mantendo o aparelho muito ativo.`,
+            }
+          );
         } else if (this.altoDetected && avg < 0.7 * TELEMETRY_THRESHOLDS.altoA) {
           this.altoDetected = false;
         }
       }
     }
+  }
+
+  getSummary(): ZkSessionSummary {
+    const n = this.onCount;
+    const fugaEv = this.events.find((e) => e.kind === 'fuga');
+    return {
+      ini: this.ini,
+      fim: this.fim ?? Date.now(),
+      via: this.via,
+      vset: this.vSet,
+      iset: this.iSet,
+      n,
+      imin: n > 0 ? this.iMin : null,
+      iavg: n > 0 ? this.iSum / n : null,
+      ipk: n > 0 ? this.iMax : null,
+      vpk: n > 0 ? this.vMax : null,
+      vavg: n > 0 ? this.vSum / n : null,
+      pmax: n > 0 ? this.pMax : null,
+      pavg: n > 0 ? this.pSum / n : null,
+      ms: this.onMs,
+      prots: [...this.prots],
+      bootPk: this.bootPk,
+      fugaA: fugaEv?.currentA ?? null,
+      evid: this.events.filter((e) => e.kind === 'fuga' || e.kind === 'curto' || e.kind === 'alto'),
+      tl: this.events.filter((e) => e.kind !== 'fuga' && e.kind !== 'curto' && e.kind !== 'alto'),
+    };
   }
 }

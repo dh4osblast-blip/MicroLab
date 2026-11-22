@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
-  Activity,
   AlertTriangle,
+  BookOpen,
   Calendar,
   CheckCircle2,
   ClipboardList,
@@ -9,11 +9,9 @@ import {
   LogOut,
   Menu,
   Package,
-  PiggyBank,
   Plus,
   QrCode,
   RefreshCw,
-  ScanLine,
   Settings,
   ShieldCheck,
   ShoppingCart,
@@ -21,12 +19,14 @@ import {
   TrendingUp,
   Truck,
   Users,
+  Wrench,
   X,
   Zap,
 } from 'lucide-react';
 import { RouteId } from '../types/lab';
 import { useLabStore } from '../store/useLabStore';
-import { OfflineIndicator, PWAInstallButton } from './PWAComponents';
+import { OfflineIndicator, PWAInstallButton, PWAUpdateBanner } from './PWAComponents';
+import { FloatingCalculator } from './FloatingCalculator';
 
 interface AppShellProps {
   currentRoute: RouteId;
@@ -83,7 +83,7 @@ export const AppShell: React.FC<AppShellProps> = ({
   ).length;
   const activeWarrantyCount = state.warranties.filter((w) => w.status !== 'Concluída').length;
 
-  const isHardwareDark = currentRoute === 'fonte-zk-sk150c' || currentRoute === 'diagnostico';
+  const isHardwareDark = currentRoute === 'fonte' && state.cfg.fonteTema !== 'br';
 
   const allNavGroups: NavGroup[] = [
     {
@@ -108,18 +108,17 @@ export const AppShell: React.FC<AppShellProps> = ({
     {
       title: 'Financeiro',
       items: [
-        { id: 'envelopes-inter', label: 'Envelopes Inter', icon: PiggyBank },
+        { id: 'fluxo-de-caixa', label: 'Fluxo de Caixa & Envelopes', icon: TrendingUp },
         { id: 'simulador-orcamento', label: 'Simulador Orçamento', icon: Sliders },
-        { id: 'fluxo-de-caixa', label: 'Fluxo de Caixa & DRE', icon: TrendingUp },
         { id: 'gerador-pix', label: 'Gerador PIX', icon: QrCode },
       ],
     },
     {
-      title: 'Bancada & Telemetria',
+      title: 'Bancada',
       items: [
-        { id: 'fonte-zk-sk150c', label: 'Fonte ZK-SK150C', icon: Zap },
-        { id: 'diagnostico', label: 'Diagnóstico', icon: Activity },
-        { id: 'check-in-check-out', label: 'Check-in / Check-out', icon: ScanLine },
+        { id: 'fonte', label: 'Fonte de bancada', icon: Zap },
+        { id: 'defeitos', label: 'Assistente de defeitos', icon: Wrench },
+        { id: 'bancada', label: 'Referência de bancada', icon: BookOpen },
       ],
     },
   ];
@@ -158,7 +157,7 @@ export const AppShell: React.FC<AppShellProps> = ({
     { id: 'pdv-rapido', label: 'PDV', icon: ShoppingCart },
     { id: 'produtos-e-pecas', label: 'Estoque', icon: Package },
     { id: 'clientes', label: 'Clientes', icon: Users },
-    { id: 'fonte-zk-sk150c', label: 'Fonte ZK', icon: Zap },
+    { id: 'fonte', label: 'Fonte ZK', icon: Zap },
   ];
 
   const visibleMobileTabs = allMobileTabs.filter((tab) => canAccessRoute(tab.id)).slice(0, 5);
@@ -512,6 +511,8 @@ export const AppShell: React.FC<AppShellProps> = ({
       </nav>
 
       <OfflineIndicator />
+      <PWAUpdateBanner />
+      <FloatingCalculator isDark={isHardwareDark} />
     </div>
   );
 };
