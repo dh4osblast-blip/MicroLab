@@ -40,7 +40,7 @@ const EVIDENCE_SLOTS: { id: EvidenceSlotId; title: string; note: string }[] = [
   { id: 'dock', title: 'Conector & Lacre Entrada', note: 'Oxidação negativa no pino' },
 ];
 
-async function resizeEvidencePhoto800Jpeg(file: File): Promise<string> {
+async function resizeEvidencePhoto640Jpeg(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Não foi possível ler o arquivo de imagem.'));
@@ -48,7 +48,7 @@ async function resizeEvidencePhoto800Jpeg(file: File): Promise<string> {
       const img = new Image();
       img.onerror = () => reject(new Error('Formato de imagem inválido.'));
       img.onload = () => {
-        const maxSide = 800;
+        const maxSide = 640;
         let w = img.width;
         let h = img.height;
         if (w > maxSide || h > maxSide) {
@@ -71,7 +71,7 @@ async function resizeEvidencePhoto800Jpeg(file: File): Promise<string> {
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.75));
+        resolve(canvas.toDataURL('image/jpeg', 0.65));
       };
       img.src = String(reader.result || '');
     };
@@ -163,6 +163,9 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
   const [evidencePhotos, setEvidencePhotos] = useState<Partial<Record<EvidenceSlotId, string>>>({});
   const [evidenceError, setEvidenceError] = useState('');
   const [lgpdAccepted, setLgpdAccepted] = useState(true);
+  const [acceptanceType, setAcceptanceType] = useState<'printed' | 'digital_channel' | 'screen_signature'>('printed');
+  const [acceptanceChannel, setAcceptanceChannel] = useState<'WhatsApp' | 'E-mail' | 'Instagram' | 'Presencial'>('WhatsApp');
+  const [acceptanceAt, setAcceptanceAt] = useState('');
   const [hasSigned, setHasSigned] = useState(false);
   const [createdOrder, setCreatedOrder] = useState<ServiceOrder | null>(null);
 
@@ -282,7 +285,7 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
     if (!file) return;
     setEvidenceError('');
     try {
-      const resizedDataUrl = await resizeEvidencePhoto800Jpeg(file);
+      const resizedDataUrl = await resizeEvidencePhoto640Jpeg(file);
       setEvidencePhotos((prev) => ({ ...prev, [slotId]: resizedDataUrl }));
     } catch (err) {
       setEvidenceError(err instanceof Error ? err.message : 'Não foi possível processar a foto.');
@@ -296,6 +299,9 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
       return next;
     });
   };
+
+  const formatNowPtBr = () =>
+    new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
 
   const handleSubmitCheckIn = (e: React.FormEvent) => {
     e.preventDefault();
@@ -313,8 +319,31 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
       if (val) cleanEvidencePhotos[slotKey] = val;
     });
     const evidenceCount = Object.keys(cleanEvidencePhotos).length;
-    const signatureDataUrl =
-      hasSigned && canvasRef.current ? canvasRef.current.toDataURL('image/png') : undefined;
+
+    const clientSignatureDataUrl =
+      acceptanceType === 'screen_signature' && hasSigned && canvasRef.current
+        ? canvasRef.current.toDataURL('image/png')
+        : undefined;
+    const recordedAcceptanceAt =
+      acceptanceType === 'digital_channel' ? acceptanceAt.trim() || formatNowPtBr() : undefined;
+
+    const acceptanceSummary =
+      acceptanceType === 'digital_channel'
+        ? `Check-in registrado com inspeção visual; aceite confirmado via ${acceptanceChannel} em ${recordedAcceptanceAt}.`
+        : acceptanceType === 'screen_signature' && clientSignatureDataUrl
+        ? 'Check-in registrado com inspeção visual e assinatura digital do cliente coletada na tela.'
+        : acceptanceType === 'screen_signature'
+        ? 'Check-in registrado com inspeção visual; assinatura na tela sem traço anexado.'
+        : 'Check-in registrado com inspeção visual; assinatura do cliente prevista na via impressa (balcão).';
+
+    const mappedAcceptedChannel: ServiceOrder['acceptedChannel'] =
+      acceptanceType === 'digital_channel'
+        ? acceptanceChannel === 'WhatsApp' || acceptanceChannel === 'Presencial'
+          ? acceptanceChannel
+          : 'Outro'
+        : acceptanceType === 'printed'
+        ? 'Presencial'
+        : '';
 
     const newOs = saveServiceOrder({
       data: {
@@ -337,12 +366,17 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
           .filter(Boolean),
         evidenceCount,
         evidencePhotos: evidenceCount > 0 ? cleanEvidencePhotos : undefined,
-        signatureDataUrl,
+        clientAcceptanceType: acceptanceType,
+        clientAcceptanceChannel: acceptanceType === 'digital_channel' ? acceptanceChannel : undefined,
+        clientAcceptanceAt: recordedAcceptanceAt,
+        clientSignatureDataUrl,
+        signatureDataUrl: clientSignatureDataUrl,
+        acceptedChannel: mappedAcceptedChannel,
         entryChecklist7: { ...entry7 },
         triage: { ...triage },
         issue: issue.trim() || 'Análise de bancada solicitada',
-        notes: 'Check-in registrado com inspeção visual e assinatura digital do cliente.',
-        diagnosis: 'Check-in registrado com inspeção visual e assinatura digital do cliente.',
+        notes: acceptanceSummary,
+        diagnosis: acceptanceSummary,
         status: initialStatus,
         priority: 'Normal',
         technician: technician.trim() || defaultTechName,
@@ -388,6 +422,9 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
     setSignalPaid(0);
     setEvidencePhotos({});
     setEvidenceError('');
+    setAcceptanceType('printed');
+    setAcceptanceChannel('WhatsApp');
+    setAcceptanceAt('');
     clearSignature();
     setCreatedOrder(newOs);
   };
@@ -1091,36 +1128,129 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
               </div>
             )}
 
-            {/* Digital Signature Canvas */}
+            {/* Modalidades de Aceite do Cliente (etapa 6) */}
             <div className="rounded-2xl bg-white p-5 border border-[#D9E0EC] space-y-3">
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-bold text-[#091b36]">6. Assinatura Digital do Cliente</h2>
-                <button
-                  type="button"
-                  onClick={clearSignature}
-                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#727784] hover:text-[#DC2626] cursor-pointer"
-                >
-                  <Eraser className="w-3.5 h-3.5" />
-                  <span>Limpar</span>
-                </button>
-              </div>
-              <div className="rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] overflow-hidden relative">
-                <canvas
-                  ref={canvasRef}
-                  width={420}
-                  height={120}
-                  onPointerDown={handlePointerDown}
-                  onPointerMove={handlePointerMove}
-                  onPointerUp={handlePointerUp}
-                  onPointerLeave={handlePointerUp}
-                  className="w-full h-28 touch-none cursor-crosshair block"
-                />
-                {!hasSigned && (
-                  <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-[#727784]/70">
-                    Assine com o dedo ou mouse aqui
-                  </span>
+              <div className="flex items-center justify-between gap-2">
+                <h2 className="text-sm font-bold text-[#091b36]">6. Aceite do Cliente</h2>
+                {acceptanceType === 'screen_signature' && (
+                  <button
+                    type="button"
+                    onClick={clearSignature}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#727784] hover:text-[#DC2626] cursor-pointer"
+                  >
+                    <Eraser className="w-3.5 h-3.5" />
+                    <span>Limpar</span>
+                  </button>
                 )}
               </div>
+
+              <div className="space-y-1.5">
+                {(
+                  [
+                    {
+                      id: 'printed',
+                      title: 'Assinar na via impressa (balcão)',
+                      desc: 'Deixa o campo limpo no A4 para assinatura à caneta.',
+                    },
+                    {
+                      id: 'digital_channel',
+                      title: 'Aceite confirmado via WhatsApp / E-mail / Instagram',
+                      desc: 'Registra o canal e data/hora formalmente no rodapé da OS.',
+                    },
+                    {
+                      id: 'screen_signature',
+                      title: 'Assinatura do cliente na tela (opcional)',
+                      desc: 'Permite colher assinatura com o dedo ou mouse neste aparelho.',
+                    },
+                  ] as const
+                ).map((opt) => {
+                  const selected = acceptanceType === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => {
+                        setAcceptanceType(opt.id);
+                        if (opt.id === 'digital_channel' && !acceptanceAt) {
+                          setAcceptanceAt(formatNowPtBr());
+                        }
+                      }}
+                      className={`w-full text-left rounded-xl border px-3 py-2.5 transition-colors cursor-pointer ${
+                        selected
+                          ? 'bg-[#EAF2FD]/75 border-[#0056ab]'
+                          : 'bg-[#F3F6FB]/70 border-[#D9E0EC] hover:border-[#0056ab]/40'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`w-3.5 h-3.5 rounded-full border flex items-center justify-center shrink-0 ${
+                            selected ? 'border-[#0056ab] bg-[#0056ab]' : 'border-[#727784] bg-white'
+                          }`}
+                        >
+                          {selected && <span className="w-1.5 h-1.5 rounded-full bg-white" />}
+                        </span>
+                        <span className="text-xs font-bold text-[#091b36]">{opt.title}</span>
+                      </div>
+                      <p className="text-[11px] text-[#727784] pl-5.5 mt-0.5">{opt.desc}</p>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {acceptanceType === 'digital_channel' && (
+                <div className="rounded-xl bg-[#F3F6FB] border border-[#D9E0EC] p-3 grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                      Canal de confirmação
+                    </label>
+                    <select
+                      value={acceptanceChannel}
+                      onChange={(e) =>
+                        setAcceptanceChannel(
+                          e.target.value as 'WhatsApp' | 'E-mail' | 'Instagram' | 'Presencial'
+                        )
+                      }
+                      className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#091b36]"
+                    >
+                      <option value="WhatsApp">WhatsApp</option>
+                      <option value="E-mail">E-mail</option>
+                      <option value="Instagram">Instagram</option>
+                      <option value="Presencial">Presencial</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                      Data / hora da confirmação
+                    </label>
+                    <input
+                      value={acceptanceAt}
+                      onChange={(e) => setAcceptanceAt(e.target.value)}
+                      placeholder={formatNowPtBr()}
+                      className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs text-[#091b36]"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {acceptanceType === 'screen_signature' && (
+                <div className="rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] overflow-hidden relative">
+                  <canvas
+                    ref={canvasRef}
+                    width={420}
+                    height={120}
+                    onPointerDown={handlePointerDown}
+                    onPointerMove={handlePointerMove}
+                    onPointerUp={handlePointerUp}
+                    onPointerLeave={handlePointerUp}
+                    className="w-full h-28 touch-none cursor-crosshair block"
+                  />
+                  {!hasSigned && (
+                    <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-[#727784]/70">
+                      Assine com o dedo ou mouse aqui (opcional)
+                    </span>
+                  )}
+                </div>
+              )}
 
               <label className="flex items-start gap-2 text-[11px] text-[#414752] cursor-pointer">
                 <input

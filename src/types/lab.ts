@@ -236,6 +236,8 @@ export interface LabConfig {
   pmicMin: number;
   defeitosExtra: CustomDefectItem[];
   complexidades: MicroComplexityLevel[];
+  techSignatureDataUrl?: string;
+  autoPrintTechSignature?: boolean;
   lastBk?: string;
   _ts?: Record<string, number>;
   updatedAt?: number;
@@ -310,6 +312,10 @@ export interface ServiceOrder {
   evidenceCount?: number;
   evidencePhotos?: Partial<Record<'front' | 'back' | 'rails' | 'dock', string>>;
   signatureDataUrl?: string;
+  clientAcceptanceType?: 'printed' | 'digital_channel' | 'screen_signature';
+  clientAcceptanceChannel?: 'WhatsApp' | 'E-mail' | 'Instagram' | 'Presencial';
+  clientAcceptanceAt?: string;
+  clientSignatureDataUrl?: string;
   entryChecklist?: Record<string, boolean>;
   entryChecklist7?: Record<string, 's' | 'n' | 't'>;
   triage?: OrderTriage;

@@ -48,6 +48,39 @@ const normKey = (s: string) =>
     .trim()
     .toLowerCase();
 
+async function resizeTechSignature400Png(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Não foi possível ler o arquivo de imagem.'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('Formato de imagem inválido para assinatura.'));
+      img.onload = () => {
+        const maxWidth = 400;
+        let w = img.width || maxWidth;
+        let h = img.height || 140;
+        if (w > maxWidth) {
+          h = Math.max(1, Math.round((h * maxWidth) / w));
+          w = maxWidth;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          reject(new Error('Canvas indisponível neste navegador.'));
+          return;
+        }
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.src = String(reader.result || '');
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 interface NumericFieldProps {
   value: number | '';
   onCommit: (val: number | '') => void;
@@ -261,6 +294,11 @@ export const SettingsView: React.FC = () => {
   const [svcMercado, setSvcMercado] = useState('');
   const [confirmDeleteSvcId, setConfirmDeleteSvcId] = useState<string | null>(null);
   const [svcFeedback, setSvcFeedback] = useState('');
+
+  // Assinatura Digital do Técnico state
+  const techSigInputRef = useRef<HTMLInputElement | null>(null);
+  const [techSigError, setTechSigError] = useState('');
+  const [techSigFeedback, setTechSigFeedback] = useState('');
 
   const handleSaveFirebaseConfig = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1728,6 +1766,106 @@ export const SettingsView: React.FC = () => {
               className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs text-[#091b36]"
             />
           </div>
+        </div>
+
+        {/* Assinatura Digital do Técnico */}
+        <div className="rounded-xl bg-[#F3F6FB] border border-[#D9E0EC] p-4 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-xs font-bold text-[#091b36]">Assinatura Digital do Técnico</h3>
+              <p className="text-[11px] text-[#727784]">
+                Redimensionada para máx. 400 px preservando transparência em PNG para o rodapé da OS (A4)
+              </p>
+            </div>
+            <input
+              ref={techSigInputRef}
+              type="file"
+              accept="image/*"
+              onChange={async (e) => {
+                const file = e.target.files?.[0];
+                e.target.value = '';
+                if (!file) return;
+                setTechSigError('');
+                setTechSigFeedback('');
+                try {
+                  const dataUrl = await resizeTechSignature400Png(file);
+                  updateLabConfig({ techSignatureDataUrl: dataUrl });
+                  setTechSigFeedback('Assinatura do técnico salva e sincronizada.');
+                  window.setTimeout(() => setTechSigFeedback(''), 3500);
+                } catch (err) {
+                  setTechSigError(
+                    err instanceof Error ? err.message : 'Erro ao processar imagem da assinatura.'
+                  );
+                }
+              }}
+              className="hidden"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => techSigInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#0056ab] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#1b6fd1] cursor-pointer"
+              >
+                <Upload className="w-3.5 h-3.5" />
+                <span>{cfg.techSignatureDataUrl ? 'Trocar assinatura' : 'Enviar assinatura'}</span>
+              </button>
+              {cfg.techSignatureDataUrl && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateLabConfig({ techSignatureDataUrl: undefined });
+                    setTechSigFeedback('Assinatura do técnico removida.');
+                    window.setTimeout(() => setTechSigFeedback(''), 3000);
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[#FEE2E2] bg-white px-3 py-1.5 text-xs font-semibold text-[#DC2626] hover:bg-[#FEE2E2] cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Remover assinatura</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {techSigError && (
+            <div className="rounded-lg bg-[#FEE2E2] border border-[#DC2626]/30 px-3 py-2 text-xs font-medium text-[#DC2626]">
+              {techSigError}
+            </div>
+          )}
+          {techSigFeedback && (
+            <div className="rounded-lg bg-[#DCFCE7] border border-[#16A34A]/30 px-3 py-2 text-xs font-medium text-[#16A34A]">
+              {techSigFeedback}
+            </div>
+          )}
+
+          <div className="rounded-xl border border-dashed border-[#D9E0EC] bg-white p-3 flex flex-col items-center justify-center min-h-[84px]">
+            {cfg.techSignatureDataUrl ? (
+              <img
+                src={cfg.techSignatureDataUrl}
+                alt="Preview da assinatura do técnico"
+                className="max-h-20 w-auto object-contain"
+              />
+            ) : (
+              <span className="text-[11px] text-[#727784]">
+                Nenhuma assinatura digital enviada (recomendado PNG com fundo transparente)
+              </span>
+            )}
+          </div>
+
+          <label className="inline-flex items-center gap-2 text-xs font-medium text-[#091b36] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={cfg.autoPrintTechSignature !== false}
+              onChange={(e) => updateLabConfig({ autoPrintTechSignature: e.target.checked })}
+              className="rounded border-[#D9E0EC] accent-[#0056ab]"
+            />
+            <span>
+              Imprimir automaticamente minha assinatura na OS (A4)
+              <span className="text-[#727784] font-normal">
+                {' '}
+                — quando desmarcado, imprime a linha em branco para assinatura à caneta
+              </span>
+            </span>
+          </label>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium pt-2 border-t border-[#D9E0EC]">

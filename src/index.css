@@ -67,12 +67,14 @@
 @media print {
   @page {
     size: A4 portrait;
-    margin: 12mm;
+    margin: 8mm 10mm;
   }
   html,
   body {
     background: #ffffff !important;
     color: #000000 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
   aside,
   header,
@@ -84,5 +86,13 @@
     padding: 0 !important;
     margin: 0 !important;
     max-width: none !important;
+  }
+  #print-os-a4 {
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  #print-os-a4 .print-avoid-break {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 }

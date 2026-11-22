@@ -224,6 +224,7 @@ export function createDefaultLabConfig(): LabConfig {
     pmicMin: 3.4,
     defeitosExtra: [],
     complexidades: DEFAULT_COMPLEXIDADES.map((c) => ({ ...c })),
+    autoPrintTechSignature: true,
     _ts: {},
     updatedAt: 1,
   };

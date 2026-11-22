@@ -546,6 +546,11 @@ function hydrateLabState(raw: Partial<LabState> | null | undefined): LabState {
               mult: Math.max(0.1, Number(c.mult) || 1.0),
             }))
         : DEFAULT_COMPLEXIDADES.map((c) => ({ ...c })),
+    techSignatureDataUrl:
+      typeof rawCfg.techSignatureDataUrl === 'string' && rawCfg.techSignatureDataUrl.trim()
+        ? rawCfg.techSignatureDataUrl
+        : undefined,
+    autoPrintTechSignature: rawCfg.autoPrintTechSignature !== false,
     _ts: rawCfg._ts && typeof rawCfg._ts === 'object' ? { ...rawCfg._ts } : {},
   };
 
@@ -1455,8 +1460,40 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       warrantyDays,
       warrantyUntil,
       evidencePhotos: data.evidencePhotos !== undefined ? data.evidencePhotos : o0?.evidencePhotos,
-      signatureDataUrl:
-        data.signatureDataUrl !== undefined ? data.signatureDataUrl : o0?.signatureDataUrl,
+      ...(() => {
+        const nextAcceptanceType =
+          data.clientAcceptanceType !== undefined
+            ? data.clientAcceptanceType
+            : o0?.clientAcceptanceType ||
+              (o0?.clientSignatureDataUrl || o0?.signatureDataUrl ? 'screen_signature' : 'printed');
+        const nextClientSig =
+          nextAcceptanceType === 'screen_signature'
+            ? data.clientSignatureDataUrl !== undefined
+              ? data.clientSignatureDataUrl
+              : data.signatureDataUrl !== undefined
+              ? data.signatureDataUrl
+              : o0?.clientSignatureDataUrl || o0?.signatureDataUrl
+            : undefined;
+        const nextChannel =
+          nextAcceptanceType === 'digital_channel'
+            ? data.clientAcceptanceChannel !== undefined
+              ? data.clientAcceptanceChannel
+              : o0?.clientAcceptanceChannel || 'WhatsApp'
+            : undefined;
+        const nextAt =
+          nextAcceptanceType === 'digital_channel'
+            ? data.clientAcceptanceAt !== undefined
+              ? data.clientAcceptanceAt
+              : o0?.clientAcceptanceAt
+            : undefined;
+        return {
+          clientAcceptanceType: nextAcceptanceType,
+          clientAcceptanceChannel: nextChannel,
+          clientAcceptanceAt: nextAt,
+          clientSignatureDataUrl: nextClientSig,
+          signatureDataUrl: nextClientSig,
+        };
+      })(),
       evidenceCount:
         data.evidencePhotos !== undefined
           ? Object.values(data.evidencePhotos).filter(Boolean).length

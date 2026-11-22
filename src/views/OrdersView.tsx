@@ -1,10 +1,11 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Banknote,
   CheckCircle2,
   ClipboardList,
   Edit3,
+  Eraser,
   Lock,
   MessageCircle,
   PackageCheck,
@@ -93,6 +94,10 @@ interface OsFormState {
   deliveryFee: number;
   deliveryRealCost: number;
   acceptedChannel: 'WhatsApp' | 'Presencial' | 'Outro' | '';
+  clientAcceptanceType: 'printed' | 'digital_channel' | 'screen_signature';
+  clientAcceptanceChannel: 'WhatsApp' | 'E-mail' | 'Instagram' | 'Presencial';
+  clientAcceptanceAt: string;
+  clientSignatureDataUrl?: string;
   signalPaid: number;
   expectedDeliveryDate: string;
   pedForn: string;
@@ -101,6 +106,9 @@ interface OsFormState {
   pedChegou: boolean;
   returnWarrantyFromId?: number;
 }
+
+const formatNowPtBr = () =>
+  new Date().toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
 
 const normStr = (s: string) =>
   String(s || '')
@@ -164,6 +172,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     triage: OrderTriage;
     exitWarningNote?: string;
   } | null>(null);
+  const sigCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sigDrawingRef = useRef(false);
+  const [hasDrawnModalSig, setHasDrawnModalSig] = useState(false);
 
   // Confirmação suave para troca de status no inspetor (Pronto / Entregue)
   const [pendingInspectorStatus, setPendingInspectorStatus] = useState<{
@@ -252,6 +263,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       deliveryFee: defaultDelivery,
       deliveryRealCost: 0,
       acceptedChannel: '',
+      clientAcceptanceType: 'printed',
+      clientAcceptanceChannel: 'WhatsApp',
+      clientAcceptanceAt: '',
+      clientSignatureDataUrl: undefined,
       signalPaid: 0,
       expectedDeliveryDate: '',
       pedForn: '',
@@ -260,6 +275,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       pedChegou: false,
       returnWarrantyFromId: prefill?.returnWarrantyFromId,
     });
+    setHasDrawnModalSig(false);
     setFormError('');
     setSoftConfirmWarnings([]);
     setPendingSavePayload(null);
@@ -280,6 +296,21 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     if (o.exitChecklist) {
       Object.assign(sai, o.exitChecklist);
     }
+
+    const existingSig = o.clientSignatureDataUrl || o.signatureDataUrl;
+    const initAcceptanceType: 'printed' | 'digital_channel' | 'screen_signature' =
+      o.clientAcceptanceType ||
+      (existingSig ? 'screen_signature' : o.acceptedChannel === 'WhatsApp' ? 'digital_channel' : 'printed');
+    const initChannel: 'WhatsApp' | 'E-mail' | 'Instagram' | 'Presencial' =
+      o.clientAcceptanceChannel ||
+      (o.acceptedChannel === 'WhatsApp'
+        ? 'WhatsApp'
+        : o.acceptedChannel === 'Presencial'
+        ? 'Presencial'
+        : 'WhatsApp');
+    const initAt =
+      o.clientAcceptanceAt ||
+      (initAcceptanceType === 'digital_channel' ? o.acceptedAt || formatNowPtBr() : '');
 
     setForm({
       editingId: o.id,
@@ -313,6 +344,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       deliveryFee: Number(o.deliveryFee) || 0,
       deliveryRealCost: Number(o.deliveryRealCost) || 0,
       acceptedChannel: o.acceptedChannel || '',
+      clientAcceptanceType: initAcceptanceType,
+      clientAcceptanceChannel: initChannel,
+      clientAcceptanceAt: initAt,
+      clientSignatureDataUrl: existingSig,
       signalPaid: Number(o.signalPaid) || 0,
       expectedDeliveryDate: o.expectedDeliveryDate || '',
       pedForn: o.pedForn || '',
@@ -321,6 +356,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       pedChegou: Boolean(o.pedChegou),
       returnWarrantyFromId: o.returnWarrantyFromId,
     });
+    setHasDrawnModalSig(false);
     setFormError('');
     setSoftConfirmWarnings([]);
     setPendingSavePayload(null);
@@ -510,6 +546,25 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     const allAccessories = [...form.accessories, ...customAc];
     const deviceLabel = `${form.brand.trim()} ${form.model.trim()}`.trim() || 'Aparelho';
 
+    const nextClientSig =
+      form.clientAcceptanceType === 'screen_signature'
+        ? hasDrawnModalSig && sigCanvasRef.current
+          ? sigCanvasRef.current.toDataURL('image/png')
+          : form.clientSignatureDataUrl
+        : undefined;
+    const nextAcceptanceAt =
+      form.clientAcceptanceType === 'digital_channel'
+        ? form.clientAcceptanceAt.trim() || formatNowPtBr()
+        : undefined;
+    const syncedAcceptedChannel: ServiceOrder['acceptedChannel'] =
+      form.clientAcceptanceType === 'digital_channel'
+        ? form.clientAcceptanceChannel === 'WhatsApp' || form.clientAcceptanceChannel === 'Presencial'
+          ? form.clientAcceptanceChannel
+          : 'Outro'
+        : form.clientAcceptanceType === 'printed'
+        ? form.acceptedChannel || 'Presencial'
+        : form.acceptedChannel;
+
     const saved = saveServiceOrder({
       id: form.editingId,
       data: {
@@ -552,7 +607,13 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         discount: form.discount,
         deliveryFee: form.deliveryFee,
         deliveryRealCost: form.deliveryRealCost,
-        acceptedChannel: form.acceptedChannel,
+        acceptedChannel: syncedAcceptedChannel,
+        clientAcceptanceType: form.clientAcceptanceType,
+        clientAcceptanceChannel:
+          form.clientAcceptanceType === 'digital_channel' ? form.clientAcceptanceChannel : undefined,
+        clientAcceptanceAt: nextAcceptanceAt,
+        clientSignatureDataUrl: nextClientSig,
+        signatureDataUrl: nextClientSig,
         signalPaid: form.signalPaid,
         expectedDeliveryDate: form.expectedDeliveryDate,
         pedForn: form.pedForn.trim(),
@@ -567,6 +628,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     onSelectOrder(saved.id);
     setFormOpen(false);
     setForm(null);
+    setHasDrawnModalSig(false);
     setSoftConfirmWarnings([]);
     setPendingSavePayload(null);
   };
@@ -1162,21 +1224,36 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   )}
                 </div>
 
-                {/* Evidências Fotográficas & Assinatura Digital do Check-in */}
-                {((activeOrder.evidencePhotos &&
-                  Object.values(activeOrder.evidencePhotos).some(Boolean)) ||
-                  activeOrder.signatureDataUrl) && (
-                  <div className="rounded-xl bg-[#F3F6FB] p-3.5 border border-[#D9E0EC] space-y-2.5">
-                    <div className="flex items-center justify-between text-xs font-bold text-[#091b36]">
-                      <span>Evidências &amp; Assinatura de Entrada</span>
-                      {activeOrder.signatureDataUrl && (
-                        <span className="px-2 py-0.5 rounded bg-[#DCFCE7] text-[#16A34A] text-[10px] font-bold">
-                          Assinatura digital anexada
-                        </span>
-                      )}
-                    </div>
-                    {activeOrder.evidencePhotos &&
-                      Object.values(activeOrder.evidencePhotos).some(Boolean) && (
+                {/* Evidências Fotográficas & Modalidade de Aceite do Cliente */}
+                {(() => {
+                  const hasPhotos = Boolean(
+                    activeOrder.evidencePhotos &&
+                      Object.values(activeOrder.evidencePhotos).some(Boolean)
+                  );
+                  const clientSig = activeOrder.clientSignatureDataUrl || activeOrder.signatureDataUrl;
+                  const acceptanceType =
+                    activeOrder.clientAcceptanceType ||
+                    (clientSig ? 'screen_signature' : 'printed');
+                  return (
+                    <div className="rounded-xl bg-[#F3F6FB] p-3.5 border border-[#D9E0EC] space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-1.5 text-xs font-bold text-[#091b36]">
+                        <span>Evidências &amp; Aceite do Cliente</span>
+                        {acceptanceType === 'digital_channel' ? (
+                          <span className="px-2 py-0.5 rounded bg-[#EAF2FD] text-[#0056ab] text-[10px] font-bold">
+                            Aceite via {activeOrder.clientAcceptanceChannel || 'WhatsApp'}
+                            {activeOrder.clientAcceptanceAt ? ` · ${activeOrder.clientAcceptanceAt}` : ''}
+                          </span>
+                        ) : acceptanceType === 'screen_signature' && clientSig ? (
+                          <span className="px-2 py-0.5 rounded bg-[#DCFCE7] text-[#16A34A] text-[10px] font-bold">
+                            Assinatura digital na tela
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded bg-white border border-[#D9E0EC] text-[#414752] text-[10px] font-semibold">
+                            Assinar na via impressa (balcão)
+                          </span>
+                        )}
+                      </div>
+                      {hasPhotos && (
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                           {(
                             [
@@ -1204,20 +1281,21 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                             ))}
                         </div>
                       )}
-                    {activeOrder.signatureDataUrl && (
-                      <div className="rounded-lg bg-white border border-[#D9E0EC] p-2">
-                        <span className="block text-[10px] text-[#727784] mb-1">
-                          Assinatura coletada no check-in:
-                        </span>
-                        <img
-                          src={activeOrder.signatureDataUrl}
-                          alt="Assinatura digital do cliente"
-                          className="max-h-14 w-auto object-contain"
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
+                      {acceptanceType === 'screen_signature' && clientSig && (
+                        <div className="rounded-lg bg-white border border-[#D9E0EC] p-2">
+                          <span className="block text-[10px] text-[#727784] mb-1">
+                            Assinatura coletada na tela:
+                          </span>
+                          <img
+                            src={clientSig}
+                            alt="Assinatura digital do cliente"
+                            className="max-h-14 w-auto object-contain"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* Telemetry Card */}
                 {activeOrder.telemetry && (
@@ -2506,30 +2584,6 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     </div>
                   )}
                   <div>
-                    <label className="block text-[10px] font-semibold text-[#414752] mb-1">
-                      Aceite do orçamento
-                    </label>
-                    <select
-                      value={form.acceptedChannel}
-                      onChange={(e) =>
-                        setForm((p) =>
-                          p
-                            ? {
-                                ...p,
-                                acceptedChannel: e.target.value as 'WhatsApp' | 'Presencial' | 'Outro' | '',
-                              }
-                            : p
-                        )
-                      }
-                      className="w-full rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-1.5 text-xs"
-                    >
-                      <option value="">—</option>
-                      <option value="WhatsApp">WhatsApp</option>
-                      <option value="Presencial">Presencial</option>
-                      <option value="Outro">Outro</option>
-                    </select>
-                  </div>
-                  <div>
                     <label className="block text-[10px] font-semibold text-[#414752] mb-1">Sinal pago (R$)</label>
                     <input
                       type="number"
@@ -2544,6 +2598,187 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       className="w-full rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-1.5 text-xs font-bold tabular-nums"
                     />
                   </div>
+                </div>
+
+                {/* 3 Modalidades de Aceite do Cliente */}
+                <div className="rounded-xl bg-[#F3F6FB] border border-[#D9E0EC] p-3 space-y-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-[#091b36]">
+                      Modalidade de Aceite do Cliente
+                    </span>
+                    {form.clientAcceptanceType === 'screen_signature' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const canvas = sigCanvasRef.current;
+                          const ctx = canvas?.getContext('2d');
+                          if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+                          setHasDrawnModalSig(false);
+                          setForm((p) => (p ? { ...p, clientSignatureDataUrl: undefined } : p));
+                        }}
+                        className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#727784] hover:text-[#DC2626] cursor-pointer"
+                      >
+                        <Eraser className="w-3 h-3" />
+                        <span>Limpar assinatura</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-1.5">
+                    {(
+                      [
+                        ['printed', 'Assinar na via impressa (balcão)'],
+                        ['digital_channel', 'Confirmado via WhatsApp / E-mail / IG'],
+                        ['screen_signature', 'Assinatura na tela (opcional)'],
+                      ] as const
+                    ).map(([mode, label]) => {
+                      const active = form.clientAcceptanceType === mode;
+                      return (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() =>
+                            setForm((p) =>
+                              p
+                                ? {
+                                    ...p,
+                                    clientAcceptanceType: mode,
+                                    clientAcceptanceAt:
+                                      mode === 'digital_channel' && !p.clientAcceptanceAt
+                                        ? formatNowPtBr()
+                                        : p.clientAcceptanceAt,
+                                  }
+                                : p
+                            )
+                          }
+                          className={`rounded-lg border px-2.5 py-2 text-left text-[11px] font-semibold transition-colors cursor-pointer ${
+                            active
+                              ? 'bg-[#0056ab] border-[#0056ab] text-white'
+                              : 'bg-white border-[#D9E0EC] text-[#414752] hover:border-[#0056ab]/50'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {form.clientAcceptanceType === 'digital_channel' && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                          Canal da confirmação
+                        </label>
+                        <select
+                          value={form.clientAcceptanceChannel}
+                          onChange={(e) =>
+                            setForm((p) =>
+                              p
+                                ? {
+                                    ...p,
+                                    clientAcceptanceChannel: e.target.value as
+                                      | 'WhatsApp'
+                                      | 'E-mail'
+                                      | 'Instagram'
+                                      | 'Presencial',
+                                  }
+                                : p
+                            )
+                          }
+                          className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#091b36]"
+                        >
+                          <option value="WhatsApp">WhatsApp</option>
+                          <option value="E-mail">E-mail</option>
+                          <option value="Instagram">Instagram</option>
+                          <option value="Presencial">Presencial</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                          Data e hora do aceite
+                        </label>
+                        <input
+                          value={form.clientAcceptanceAt}
+                          onChange={(e) =>
+                            setForm((p) => (p ? { ...p, clientAcceptanceAt: e.target.value } : p))
+                          }
+                          placeholder={formatNowPtBr()}
+                          className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs text-[#091b36]"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {form.clientAcceptanceType === 'screen_signature' && (
+                    <div className="space-y-1.5">
+                      {!hasDrawnModalSig && form.clientSignatureDataUrl && (
+                        <div className="rounded-lg border border-[#D9E0EC] bg-white p-2 flex items-center justify-between gap-2">
+                          <div>
+                            <span className="block text-[10px] text-[#727784]">
+                              Assinatura salva nesta OS:
+                            </span>
+                            <img
+                              src={form.clientSignatureDataUrl}
+                              alt="Assinatura atual"
+                              className="max-h-12 w-auto object-contain mt-0.5"
+                            />
+                          </div>
+                        </div>
+                      )}
+                      <div className="rounded-lg border border-[#D9E0EC] bg-white overflow-hidden relative">
+                        <canvas
+                          ref={sigCanvasRef}
+                          width={420}
+                          height={100}
+                          onPointerDown={(e) => {
+                            const canvas = sigCanvasRef.current;
+                            const ctx = canvas?.getContext('2d');
+                            if (!canvas || !ctx) return;
+                            const rect = canvas.getBoundingClientRect();
+                            sigDrawingRef.current = true;
+                            setHasDrawnModalSig(true);
+                            ctx.beginPath();
+                            ctx.moveTo(
+                              ((e.clientX - rect.left) / rect.width) * canvas.width,
+                              ((e.clientY - rect.top) / rect.height) * canvas.height
+                            );
+                            ctx.lineWidth = 2.4;
+                            ctx.lineCap = 'round';
+                            ctx.strokeStyle = '#091b36';
+                          }}
+                          onPointerMove={(e) => {
+                            if (!sigDrawingRef.current) return;
+                            const canvas = sigCanvasRef.current;
+                            const ctx = canvas?.getContext('2d');
+                            if (!canvas || !ctx) return;
+                            const rect = canvas.getBoundingClientRect();
+                            ctx.lineTo(
+                              ((e.clientX - rect.left) / rect.width) * canvas.width,
+                              ((e.clientY - rect.top) / rect.height) * canvas.height
+                            );
+                            ctx.stroke();
+                          }}
+                          onPointerUp={() => {
+                            sigDrawingRef.current = false;
+                          }}
+                          onPointerLeave={() => {
+                            sigDrawingRef.current = false;
+                          }}
+                          className="w-full h-24 touch-none cursor-crosshair block"
+                        />
+                        {!hasDrawnModalSig && (
+                          <span className="pointer-events-none absolute inset-0 flex items-center justify-center text-[11px] text-[#727784]/75">
+                            {form.clientSignatureDataUrl
+                              ? 'Desenhe aqui para substituir a assinatura salva (opcional)'
+                              : 'Assine com o dedo ou mouse aqui (opcional)'}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                   <div>
                     <label className="block text-[10px] font-semibold text-[#414752] mb-1">
                       Previsão de entrega
@@ -2952,56 +3187,60 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         )}
       </div>
 
-      {/* Layout de Impressão A4 Completo (sem custos internos ou margens) */}
+      {/* Layout de Impressão A4 Completo (1 página compacta, sem custos internos ou margens) */}
       {activeOrder && (
-        <section id="print-os-a4" className="hidden print:block bg-white text-black text-[11px] leading-snug">
-          <div className="flex items-start justify-between border-b-2 border-black pb-3 mb-3">
-            <div className="flex items-center gap-3">
+        <section
+          id="print-os-a4"
+          className="hidden print:block bg-white text-black text-[10px] leading-tight"
+        >
+          <div className="flex items-center justify-between border-b-2 border-black pb-2 mb-2">
+            <div className="flex items-center gap-2.5">
               <img
                 src="./pwa-192x192.png"
                 alt="MicroLab"
-                className="w-11 h-11 rounded-lg object-cover shrink-0 border border-black/20"
+                className="w-9 h-9 rounded-md object-cover shrink-0 border border-black/20"
               />
               <div>
-                <div className="text-base font-extrabold tracking-tight">MicroLab</div>
-                <div className="text-[10px] uppercase tracking-wider">Assistência Técnica Especializada</div>
+                <div className="text-sm font-extrabold tracking-tight leading-none">MicroLab</div>
+                <div className="text-[9px] uppercase tracking-wider mt-0.5">
+                  Assistência Técnica Especializada
+                </div>
               </div>
             </div>
-            <div className="text-right text-[10px]">
+            <div className="text-right text-[9px] leading-tight">
               <div className="font-bold">MicroLab · Assistência Técnica</div>
-              <div>WhatsApp (71) 99129-3552</div>
-              <div>Instagram @microlabssa</div>
+              <div>WhatsApp (71) 99129-3552 · Instagram @microlabssa</div>
               <div>Impresso em {new Date().toLocaleDateString('pt-BR')}</div>
             </div>
           </div>
 
-          <h1 className="text-center text-sm font-extrabold uppercase border border-black py-1.5 mb-3">
+          <h1 className="text-center text-xs font-extrabold uppercase border border-black py-1 mb-2">
             ORDEM DE SERVIÇO Nº {activeOrder.id} — {activeOrder.status.toUpperCase()}
           </h1>
 
-          <div className="mb-3">
-            <h3 className="text-[10px] font-bold uppercase bg-gray-100 border border-black px-2 py-1">
+          <div className="mb-2 print-avoid-break">
+            <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
               Dados do Cliente
             </h3>
-            <div className="grid grid-cols-2 border-x border-b border-black text-[10px]">
-              <div className="p-1.5 border-r border-b border-black">
-                <span className="block text-[9px] uppercase text-gray-600">Nome do cliente</span>
+            <div className="grid grid-cols-2 border-x border-b border-black text-[9.5px]">
+              <div className="px-1.5 py-1 border-r border-b border-black">
+                <span className="block text-[8px] uppercase text-gray-600">Nome do cliente</span>
                 <strong>{activeOrder.clientName}</strong>
               </div>
-              <div className="p-1.5 border-b border-black">
-                <span className="block text-[9px] uppercase text-gray-600">Telefone / WhatsApp</span>
+              <div className="px-1.5 py-1 border-b border-black">
+                <span className="block text-[8px] uppercase text-gray-600">Telefone / WhatsApp</span>
                 <strong>{activeOrder.clientPhone}</strong>
               </div>
-              <div className="p-1.5 border-r border-black">
-                <span className="block text-[9px] uppercase text-gray-600">Data de entrada</span>
+              <div className="px-1.5 py-1 border-r border-black">
+                <span className="block text-[8px] uppercase text-gray-600">Data de entrada</span>
                 <strong>
                   {activeOrder.createdDate
                     ? formatDateBR(activeOrder.createdDate)
                     : activeOrder.createdAt}
                 </strong>
               </div>
-              <div className="p-1.5">
-                <span className="block text-[9px] uppercase text-gray-600">
+              <div className="px-1.5 py-1">
+                <span className="block text-[8px] uppercase text-gray-600">
                   Técnico responsável{activeOrder.expectedDeliveryDate ? ' · Previsão estimada' : ''}
                 </span>
                 <strong>
@@ -3014,49 +3253,49 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             </div>
           </div>
 
-          <div className="mb-3">
-            <h3 className="text-[10px] font-bold uppercase bg-gray-100 border border-black px-2 py-1">
+          <div className="mb-2 print-avoid-break">
+            <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
               Dados do Aparelho
             </h3>
-            <div className="grid grid-cols-2 border-x border-b border-black text-[10px]">
-              <div className="p-1.5 border-r border-b border-black">
-                <span className="block text-[9px] uppercase text-gray-600">Marca / Modelo</span>
+            <div className="grid grid-cols-2 border-x border-b border-black text-[9.5px]">
+              <div className="px-1.5 py-1 border-r border-b border-black">
+                <span className="block text-[8px] uppercase text-gray-600">Marca / Modelo</span>
                 <strong>{activeOrder.device}</strong>
               </div>
-              <div className="p-1.5 border-b border-black">
-                <span className="block text-[9px] uppercase text-gray-600">IMEI / Série</span>
+              <div className="px-1.5 py-1 border-b border-black">
+                <span className="block text-[8px] uppercase text-gray-600">IMEI / Série</span>
                 <strong className="font-mono">{activeOrder.imei}</strong>
               </div>
-              <div className="p-1.5 border-r border-b border-black">
-                <span className="block text-[9px] uppercase text-gray-600">Acessórios deixados</span>
+              <div className="px-1.5 py-1 border-r border-b border-black">
+                <span className="block text-[8px] uppercase text-gray-600">Acessórios deixados</span>
                 <strong>{activeOrder.accessories?.join(', ') || 'Nenhum'}</strong>
               </div>
-              <div className="p-1.5 border-b border-black">
-                <span className="block text-[9px] uppercase text-gray-600">Senha / padrão (LGPD)</span>
+              <div className="px-1.5 py-1 border-b border-black">
+                <span className="block text-[8px] uppercase text-gray-600">Senha / padrão (LGPD)</span>
                 <strong>{activeOrder.hasPasscode ? 'Informada ao técnico' : 'Não informada'}</strong>
               </div>
-              <div className="p-1.5 col-span-2 border-b border-black">
-                <span className="block text-[9px] uppercase text-gray-600">Defeito relatado</span>
+              <div className="px-1.5 py-1 col-span-2 border-b border-black">
+                <span className="block text-[8px] uppercase text-gray-600">Defeito relatado</span>
                 <div>{activeOrder.issue}</div>
               </div>
-              <div className="p-1.5 col-span-2">
-                <span className="block text-[9px] uppercase text-gray-600">Observações técnicas</span>
+              <div className="px-1.5 py-1 col-span-2">
+                <span className="block text-[8px] uppercase text-gray-600">Observações técnicas</span>
                 <div>{activeOrder.notes || activeOrder.diagnosis}</div>
               </div>
             </div>
           </div>
 
-          <div className="mb-3">
-            <h3 className="text-[10px] font-bold uppercase bg-gray-100 border border-black px-2 py-1">
+          <div className="mb-2 print-avoid-break">
+            <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
               Checklist de Entrada
             </h3>
-            <table className="w-full border-collapse border-x border-b border-black text-[10px]">
+            <table className="w-full border-collapse border-x border-b border-black text-[9px]">
               <thead>
                 <tr className="border-b border-black bg-gray-50">
-                  <th className="text-left p-1 border-r border-black">Item inspecionado</th>
-                  <th className="text-center p-1 border-r border-black w-16">Sim</th>
-                  <th className="text-center p-1 border-r border-black w-16">Não</th>
-                  <th className="text-center p-1 w-24">Não testado</th>
+                  <th className="text-left px-1.5 py-0.5 border-r border-black">Item inspecionado</th>
+                  <th className="text-center px-1 py-0.5 border-r border-black w-14">Sim</th>
+                  <th className="text-center px-1 py-0.5 border-r border-black w-14">Não</th>
+                  <th className="text-center px-1 py-0.5 w-20">Não testado</th>
                 </tr>
               </thead>
               <tbody>
@@ -3064,14 +3303,14 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   const st = activeOrder.entryChecklist7?.[item.key] || 't';
                   return (
                     <tr key={item.key} className="border-b border-black last:border-b-0">
-                      <td className="p-1 border-r border-black">{item.label}</td>
-                      <td className="p-1 border-r border-black text-center font-mono">
+                      <td className="px-1.5 py-0.5 border-r border-black">{item.label}</td>
+                      <td className="px-1 py-0.5 border-r border-black text-center font-mono">
                         {st === 's' ? '[ X ]' : '[   ]'}
                       </td>
-                      <td className="p-1 border-r border-black text-center font-mono">
+                      <td className="px-1 py-0.5 border-r border-black text-center font-mono">
                         {st === 'n' ? '[ X ]' : '[   ]'}
                       </td>
-                      <td className="p-1 text-center font-mono">
+                      <td className="px-1 py-0.5 text-center font-mono">
                         {st === 't' ? '[ X ]' : '[   ]'}
                       </td>
                     </tr>
@@ -3085,29 +3324,31 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             (['front', 'back', 'rails', 'dock'] as const).some((slot) =>
               Boolean(activeOrder.evidencePhotos?.[slot])
             ) && (
-              <div className="mb-3">
-                <h3 className="text-[10px] font-bold uppercase bg-gray-100 border border-black px-2 py-1">
+              <div className="block clear-both mb-2 print-avoid-break">
+                <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
                   Registro Fotográfico de Entrada (Evidências)
                 </h3>
-                <div className="grid grid-cols-4 gap-2 border-x border-b border-black p-2">
+                <div className="grid grid-cols-4 gap-1.5 border-x border-b border-black p-1.5">
                   {(
                     [
                       ['front', 'Frontal / Display'],
-                      ['back', 'Tampa Traseira & Câmeras'],
+                      ['back', 'Traseira & Câmeras'],
                       ['rails', 'Laterais & Parafusos'],
-                      ['dock', 'Conector & Lacre Entrada'],
+                      ['dock', 'Conector & Lacre'],
                     ] as const
                   ).map(([slot, label]) => {
                     const photo = activeOrder.evidencePhotos?.[slot];
                     if (!photo) return null;
                     return (
-                      <div key={slot} className="border border-gray-300 p-1 text-center">
+                      <div key={slot} className="border border-gray-300 p-1 text-center overflow-hidden">
                         <img
                           src={photo}
                           alt={label}
-                          className="w-full h-24 object-contain mx-auto bg-white"
+                          className="w-full max-h-16 h-16 object-cover mx-auto bg-white block"
                         />
-                        <div className="text-[8px] font-semibold mt-1 text-gray-800">{label}</div>
+                        <div className="text-[7.5px] font-semibold mt-0.5 text-gray-800 truncate">
+                          {label}
+                        </div>
                       </div>
                     );
                   })}
@@ -3115,87 +3356,87 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
               </div>
             )}
 
-          <div className="mb-3">
-            <h3 className="text-[10px] font-bold uppercase bg-gray-100 border border-black px-2 py-1">
+          <div className="block clear-both mt-2 mb-2 print-avoid-break">
+            <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
               Descrição de Serviços e Valores
             </h3>
-            <table className="w-full border-collapse border-x border-b border-black text-[10px]">
+            <table className="w-full border-collapse border-x border-b border-black text-[9.5px]">
               <thead>
                 <tr className="border-b border-black bg-gray-50">
-                  <th className="text-left p-1 border-r border-black">Descrição</th>
-                  <th className="text-right p-1 border-r border-black w-12">Qtd</th>
-                  <th className="text-right p-1 border-r border-black w-24">Valor</th>
-                  <th className="text-right p-1 w-24">Subtotal</th>
+                  <th className="text-left px-1.5 py-0.5 border-r border-black">Descrição</th>
+                  <th className="text-right px-1.5 py-0.5 border-r border-black w-10">Qtd</th>
+                  <th className="text-right px-1.5 py-0.5 border-r border-black w-20">Valor</th>
+                  <th className="text-right px-1.5 py-0.5 w-20">Subtotal</th>
                 </tr>
               </thead>
               <tbody>
                 {activeOrder.servicePrice > 0 && (
                   <tr className="border-b border-black">
-                    <td className="p-1 border-r border-black">
+                    <td className="px-1.5 py-0.5 border-r border-black">
                       {activeOrder.serviceCatalogName || 'Serviço Técnico Especializado'}
                     </td>
-                    <td className="p-1 border-r border-black text-right">1</td>
-                    <td className="p-1 border-r border-black text-right">
+                    <td className="px-1.5 py-0.5 border-r border-black text-right">1</td>
+                    <td className="px-1.5 py-0.5 border-r border-black text-right">
                       {formatBRL(activeOrder.servicePrice)}
                     </td>
-                    <td className="p-1 text-right">{formatBRL(activeOrder.servicePrice)}</td>
+                    <td className="px-1.5 py-0.5 text-right">{formatBRL(activeOrder.servicePrice)}</td>
                   </tr>
                 )}
                 {(activeOrder.extraItems || []).map((it, idx) => (
                   <tr key={idx} className="border-b border-black">
-                    <td className="p-1 border-r border-black">{it.d}</td>
-                    <td className="p-1 border-r border-black text-right">{it.q}</td>
-                    <td className="p-1 border-r border-black text-right">{formatBRL(it.v)}</td>
-                    <td className="p-1 text-right">{formatBRL(it.q * it.v)}</td>
+                    <td className="px-1.5 py-0.5 border-r border-black">{it.d}</td>
+                    <td className="px-1.5 py-0.5 border-r border-black text-right">{it.q}</td>
+                    <td className="px-1.5 py-0.5 border-r border-black text-right">{formatBRL(it.v)}</td>
+                    <td className="px-1.5 py-0.5 text-right">{formatBRL(it.q * it.v)}</td>
                   </tr>
                 ))}
                 {activeOrder.partsPrice > 0 && (
                   <tr className="border-b border-black">
-                    <td className="p-1 border-r border-black">Peças e Componentes Aplicados</td>
-                    <td className="p-1 border-r border-black text-right">1</td>
-                    <td className="p-1 border-r border-black text-right">
+                    <td className="px-1.5 py-0.5 border-r border-black">Peças e Componentes Aplicados</td>
+                    <td className="px-1.5 py-0.5 border-r border-black text-right">1</td>
+                    <td className="px-1.5 py-0.5 border-r border-black text-right">
                       {formatBRL(activeOrder.partsPrice)}
                     </td>
-                    <td className="p-1 text-right">{formatBRL(activeOrder.partsPrice)}</td>
+                    <td className="px-1.5 py-0.5 text-right">{formatBRL(activeOrder.partsPrice)}</td>
                   </tr>
                 )}
               </tbody>
               <tfoot>
                 {(activeOrder.deliveryFee || 0) > 0 && (
                   <tr className="border-b border-black">
-                    <td colSpan={3} className="p-1 border-r border-black text-right">
+                    <td colSpan={3} className="px-1.5 py-0.5 border-r border-black text-right">
                       Taxa de entrega
                     </td>
-                    <td className="p-1 text-right">{formatBRL(activeOrder.deliveryFee || 0)}</td>
+                    <td className="px-1.5 py-0.5 text-right">{formatBRL(activeOrder.deliveryFee || 0)}</td>
                   </tr>
                 )}
                 {(activeOrder.discount || 0) > 0 && (
                   <tr className="border-b border-black">
-                    <td colSpan={3} className="p-1 border-r border-black text-right">
+                    <td colSpan={3} className="px-1.5 py-0.5 border-r border-black text-right">
                       Desconto
                     </td>
-                    <td className="p-1 text-right">- {formatBRL(activeOrder.discount || 0)}</td>
+                    <td className="px-1.5 py-0.5 text-right">- {formatBRL(activeOrder.discount || 0)}</td>
                   </tr>
                 )}
                 <tr className="font-bold bg-gray-50 border-b border-black">
-                  <td colSpan={3} className="p-1.5 border-r border-black text-right">
+                  <td colSpan={3} className="px-1.5 py-1 border-r border-black text-right">
                     VALOR TOTAL
                   </td>
-                  <td className="p-1.5 text-right">{formatBRL(activeOrderTotal)}</td>
+                  <td className="px-1.5 py-1 text-right">{formatBRL(activeOrderTotal)}</td>
                 </tr>
                 {activeOrderPaid > 0 && (
                   <>
                     <tr className="border-b border-black">
-                      <td colSpan={3} className="p-1 border-r border-black text-right">
+                      <td colSpan={3} className="px-1.5 py-0.5 border-r border-black text-right">
                         Já pago (sinal e recebimentos)
                       </td>
-                      <td className="p-1 text-right">- {formatBRL(activeOrderPaid)}</td>
+                      <td className="px-1.5 py-0.5 text-right">- {formatBRL(activeOrderPaid)}</td>
                     </tr>
                     <tr className="font-bold bg-gray-50">
-                      <td colSpan={3} className="p-1.5 border-r border-black text-right">
+                      <td colSpan={3} className="px-1.5 py-1 border-r border-black text-right">
                         SALDO RESTANTE
                       </td>
-                      <td className="p-1.5 text-right">{formatBRL(activeOrderSaldo)}</td>
+                      <td className="px-1.5 py-1 text-right">{formatBRL(activeOrderSaldo)}</td>
                     </tr>
                   </>
                 )}
@@ -3203,11 +3444,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             </table>
           </div>
 
-          <div className="mb-5">
-            <h3 className="text-[10px] font-bold uppercase bg-gray-100 border border-black px-2 py-1">
-              Termos Legais e Garantia
+          <div className="block clear-both mb-2 print-avoid-break">
+            <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
+              Termos Legais e Garantia (CDC)
             </h3>
-            <div className="border-x border-b border-black p-2 text-[9px] space-y-1.5 leading-snug text-justify">
+            <div className="border-x border-b border-black p-1.5 text-[8.5px] space-y-1 leading-tight text-justify">
               <p>
                 <strong>CONDIÇÕES GERAIS:</strong> {state.cfg.condExec}
               </p>
@@ -3223,31 +3464,58 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-10 pt-4 text-center text-[10px]">
-            <div>
-              <div className="h-14 flex items-end justify-center mb-1">
-                {activeOrder.signatureDataUrl && (
-                  <img
-                    src={activeOrder.signatureDataUrl}
-                    alt="Assinatura do Cliente"
-                    className="max-h-14 w-auto object-contain mx-auto"
-                  />
-                )}
+          {(() => {
+            const clientSig = activeOrder.clientSignatureDataUrl || activeOrder.signatureDataUrl;
+            const acceptanceType =
+              activeOrder.clientAcceptanceType ||
+              (clientSig ? 'screen_signature' : 'printed');
+            const showTechSig =
+              state.cfg.autoPrintTechSignature !== false && Boolean(state.cfg.techSignatureDataUrl);
+            return (
+              <div className="block clear-both pt-2 print-avoid-break">
+                <div className="grid grid-cols-2 gap-8 text-center text-[9.5px]">
+                  <div>
+                    <div className="h-12 flex items-end justify-center mb-1">
+                      {acceptanceType === 'digital_channel' ? (
+                        <div className="border border-black px-2 py-1 text-[8px] font-bold leading-tight bg-gray-50">
+                          Aceite confirmado via {activeOrder.clientAcceptanceChannel || 'WhatsApp'}
+                          {activeOrder.clientAcceptanceAt
+                            ? ` em ${activeOrder.clientAcceptanceAt}`
+                            : ''}
+                        </div>
+                      ) : acceptanceType === 'screen_signature' && clientSig ? (
+                        <img
+                          src={clientSig}
+                          alt="Assinatura do Cliente"
+                          className="max-h-12 w-auto object-contain mx-auto"
+                        />
+                      ) : null}
+                    </div>
+                    <div className="border-t border-black pt-1 font-bold">Assinatura do Cliente</div>
+                    <div>{activeOrder.clientName}</div>
+                    <div className="text-[8px] text-gray-600 mt-0.5">Data: ____/____/________</div>
+                  </div>
+                  <div>
+                    <div className="h-12 flex items-end justify-center mb-1">
+                      {showTechSig && state.cfg.techSignatureDataUrl && (
+                        <img
+                          src={state.cfg.techSignatureDataUrl}
+                          alt="Assinatura do Técnico"
+                          className="max-h-12 w-auto object-contain mx-auto"
+                        />
+                      )}
+                    </div>
+                    <div className="border-t border-black pt-1 font-bold">Assinatura do Técnico</div>
+                    <div>{activeOrder.technician || defaultTechName}</div>
+                    <div className="text-[8px] text-gray-600 mt-0.5">Data: ____/____/________</div>
+                  </div>
+                </div>
+                <p className="text-center text-[8px] text-gray-500 mt-1.5">
+                  Orçamento antes do serviço · MicroLab OS
+                </p>
               </div>
-              <div className="border-t border-black pt-1 font-bold">Assinatura do Cliente</div>
-              <div>{activeOrder.clientName}</div>
-              <div className="text-[9px] text-gray-600 mt-1">Data: ____/____/________</div>
-            </div>
-            <div>
-              <div className="h-14 mb-1" />
-              <div className="border-t border-black pt-1 font-bold">Assinatura do Técnico</div>
-              <div>{activeOrder.technician || defaultTechName}</div>
-              <div className="text-[9px] text-gray-600 mt-1">Data: ____/____/________</div>
-            </div>
-          </div>
-          <p className="text-center text-[9px] text-gray-500 mt-3">
-            Orçamento antes do serviço · MicroLab OS
-          </p>
+            );
+          })()}
         </section>
       )}
     </>
