@@ -95,4 +95,39 @@
     break-inside: avoid;
     page-break-inside: avoid;
   }
+  #print-os-a4 .print-evidence-section {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    margin-bottom: 8px !important;
+    overflow: hidden !important;
+    clear: both !important;
+  }
+  #print-os-a4 .print-evidence-grid {
+    display: grid !important;
+    grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+    gap: 6px !important;
+    position: static !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  #print-os-a4 .print-evidence-card {
+    position: static !important;
+    overflow: hidden !important;
+    min-width: 0 !important;
+  }
+  #print-os-a4 .print-evidence-media {
+    position: static !important;
+    width: 100% !important;
+    height: 52px !important;
+    overflow: hidden !important;
+  }
+  #print-os-a4 .print-evidence-media img {
+    position: static !important;
+    width: 100% !important;
+    height: 52px !important;
+    max-height: 52px !important;
+    object-fit: cover !important;
+    display: block !important;
+  }
 }

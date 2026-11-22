@@ -3193,7 +3193,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
           id="print-os-a4"
           className="hidden print:block bg-white text-black text-[10px] leading-tight"
         >
-          <div className="flex items-center justify-between border-b-2 border-black pb-2 mb-2">
+          <div className="flex items-center justify-between border-b-2 border-black pb-1.5 mb-1.5">
             <div className="flex items-center gap-2.5">
               <img
                 src="./pwa-192x192.png"
@@ -3214,24 +3214,24 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             </div>
           </div>
 
-          <h1 className="text-center text-xs font-extrabold uppercase border border-black py-1 mb-2">
+          <h1 className="text-center text-xs font-extrabold uppercase border border-black py-0.5 mb-1.5">
             ORDEM DE SERVIÇO Nº {activeOrder.id} — {activeOrder.status.toUpperCase()}
           </h1>
 
-          <div className="mb-2 print-avoid-break">
+          <div className="mb-1.5 print-avoid-break">
             <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
               Dados do Cliente
             </h3>
             <div className="grid grid-cols-2 border-x border-b border-black text-[9.5px]">
-              <div className="px-1.5 py-1 border-r border-b border-black">
+              <div className="px-1.5 py-0.5 border-r border-b border-black">
                 <span className="block text-[8px] uppercase text-gray-600">Nome do cliente</span>
                 <strong>{activeOrder.clientName}</strong>
               </div>
-              <div className="px-1.5 py-1 border-b border-black">
+              <div className="px-1.5 py-0.5 border-b border-black">
                 <span className="block text-[8px] uppercase text-gray-600">Telefone / WhatsApp</span>
                 <strong>{activeOrder.clientPhone}</strong>
               </div>
-              <div className="px-1.5 py-1 border-r border-black">
+              <div className="px-1.5 py-0.5 border-r border-black">
                 <span className="block text-[8px] uppercase text-gray-600">Data de entrada</span>
                 <strong>
                   {activeOrder.createdDate
@@ -3239,7 +3239,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     : activeOrder.createdAt}
                 </strong>
               </div>
-              <div className="px-1.5 py-1">
+              <div className="px-1.5 py-0.5">
                 <span className="block text-[8px] uppercase text-gray-600">
                   Técnico responsável{activeOrder.expectedDeliveryDate ? ' · Previsão estimada' : ''}
                 </span>
@@ -3253,39 +3253,39 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             </div>
           </div>
 
-          <div className="mb-2 print-avoid-break">
+          <div className="mb-1.5 print-avoid-break">
             <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
               Dados do Aparelho
             </h3>
             <div className="grid grid-cols-2 border-x border-b border-black text-[9.5px]">
-              <div className="px-1.5 py-1 border-r border-b border-black">
+              <div className="px-1.5 py-0.5 border-r border-b border-black">
                 <span className="block text-[8px] uppercase text-gray-600">Marca / Modelo</span>
                 <strong>{activeOrder.device}</strong>
               </div>
-              <div className="px-1.5 py-1 border-b border-black">
+              <div className="px-1.5 py-0.5 border-b border-black">
                 <span className="block text-[8px] uppercase text-gray-600">IMEI / Série</span>
                 <strong className="font-mono">{activeOrder.imei}</strong>
               </div>
-              <div className="px-1.5 py-1 border-r border-b border-black">
+              <div className="px-1.5 py-0.5 border-r border-b border-black">
                 <span className="block text-[8px] uppercase text-gray-600">Acessórios deixados</span>
                 <strong>{activeOrder.accessories?.join(', ') || 'Nenhum'}</strong>
               </div>
-              <div className="px-1.5 py-1 border-b border-black">
+              <div className="px-1.5 py-0.5 border-b border-black">
                 <span className="block text-[8px] uppercase text-gray-600">Senha / padrão (LGPD)</span>
                 <strong>{activeOrder.hasPasscode ? 'Informada ao técnico' : 'Não informada'}</strong>
               </div>
-              <div className="px-1.5 py-1 col-span-2 border-b border-black">
+              <div className="px-1.5 py-0.5 col-span-2 border-b border-black">
                 <span className="block text-[8px] uppercase text-gray-600">Defeito relatado</span>
                 <div>{activeOrder.issue}</div>
               </div>
-              <div className="px-1.5 py-1 col-span-2">
+              <div className="px-1.5 py-0.5 col-span-2">
                 <span className="block text-[8px] uppercase text-gray-600">Observações técnicas</span>
                 <div>{activeOrder.notes || activeOrder.diagnosis}</div>
               </div>
             </div>
           </div>
 
-          <div className="mb-2 print-avoid-break">
+          <div className="mb-1.5 print-avoid-break">
             <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
               Checklist de Entrada
             </h3>
@@ -3293,9 +3293,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
               <thead>
                 <tr className="border-b border-black bg-gray-50">
                   <th className="text-left px-1.5 py-0.5 border-r border-black">Item inspecionado</th>
-                  <th className="text-center px-1 py-0.5 border-r border-black w-14">Sim</th>
-                  <th className="text-center px-1 py-0.5 border-r border-black w-14">Não</th>
-                  <th className="text-center px-1 py-0.5 w-20">Não testado</th>
+                  <th className="text-center px-1 py-0.5 border-r border-black w-14 whitespace-nowrap">Sim</th>
+                  <th className="text-center px-1 py-0.5 border-r border-black w-14 whitespace-nowrap">Não</th>
+                  <th className="text-center px-1 py-0.5 w-20 whitespace-nowrap">Não testado</th>
                 </tr>
               </thead>
               <tbody>
@@ -3304,14 +3304,14 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   return (
                     <tr key={item.key} className="border-b border-black last:border-b-0">
                       <td className="px-1.5 py-0.5 border-r border-black">{item.label}</td>
-                      <td className="px-1 py-0.5 border-r border-black text-center font-mono">
-                        {st === 's' ? '[ X ]' : '[   ]'}
+                      <td className="px-1 py-0.5 border-r border-black text-center font-mono whitespace-nowrap">
+                        {st === 's' ? '[X]' : '[ ]'}
                       </td>
-                      <td className="px-1 py-0.5 border-r border-black text-center font-mono">
-                        {st === 'n' ? '[ X ]' : '[   ]'}
+                      <td className="px-1 py-0.5 border-r border-black text-center font-mono whitespace-nowrap">
+                        {st === 'n' ? '[X]' : '[ ]'}
                       </td>
-                      <td className="px-1 py-0.5 text-center font-mono">
-                        {st === 't' ? '[ X ]' : '[   ]'}
+                      <td className="px-1 py-0.5 text-center font-mono whitespace-nowrap">
+                        {st === 't' ? '[X]' : '[ ]'}
                       </td>
                     </tr>
                   );
@@ -3324,11 +3324,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             (['front', 'back', 'rails', 'dock'] as const).some((slot) =>
               Boolean(activeOrder.evidencePhotos?.[slot])
             ) && (
-              <div className="block clear-both mb-2 print-avoid-break">
+              <div className="print-evidence-section block static w-full mb-2 overflow-hidden clear-both print-avoid-break">
                 <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
                   Registro Fotográfico de Entrada (Evidências)
                 </h3>
-                <div className="grid grid-cols-4 gap-1.5 border-x border-b border-black p-1.5">
+                <div className="print-evidence-grid grid grid-cols-4 gap-[6px] w-full static border-x border-b border-black p-1.5 overflow-hidden">
                   {(
                     [
                       ['front', 'Frontal / Display'],
@@ -3338,14 +3338,24 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     ] as const
                   ).map(([slot, label]) => {
                     const photo = activeOrder.evidencePhotos?.[slot];
-                    if (!photo) return null;
                     return (
-                      <div key={slot} className="border border-gray-300 p-1 text-center overflow-hidden">
-                        <img
-                          src={photo}
-                          alt={label}
-                          className="w-full max-h-16 h-16 object-cover mx-auto bg-white block"
-                        />
+                      <div
+                        key={slot}
+                        className="print-evidence-card static border border-gray-300 p-1 text-center overflow-hidden bg-white"
+                      >
+                        {photo ? (
+                          <div className="print-evidence-media static w-full h-[52px] overflow-hidden bg-white">
+                            <img
+                              src={photo}
+                              alt={label}
+                              className="static w-full h-[52px] max-h-[52px] object-cover block"
+                            />
+                          </div>
+                        ) : (
+                          <div className="print-evidence-media static w-full h-[52px] border border-dashed border-gray-400 bg-gray-50 flex items-center justify-center text-[7px] text-gray-500">
+                            Sem foto
+                          </div>
+                        )}
                         <div className="text-[7.5px] font-semibold mt-0.5 text-gray-800 truncate">
                           {label}
                         </div>
@@ -3356,7 +3366,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
               </div>
             )}
 
-          <div className="block clear-both mt-2 mb-2 print-avoid-break">
+          <div className="block static w-full clear-both overflow-hidden mt-1.5 mb-1.5 print-avoid-break">
             <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
               Descrição de Serviços e Valores
             </h3>
@@ -3419,10 +3429,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   </tr>
                 )}
                 <tr className="font-bold bg-gray-50 border-b border-black">
-                  <td colSpan={3} className="px-1.5 py-1 border-r border-black text-right">
+                  <td colSpan={3} className="px-1.5 py-0.5 border-r border-black text-right">
                     VALOR TOTAL
                   </td>
-                  <td className="px-1.5 py-1 text-right">{formatBRL(activeOrderTotal)}</td>
+                  <td className="px-1.5 py-0.5 text-right">{formatBRL(activeOrderTotal)}</td>
                 </tr>
                 {activeOrderPaid > 0 && (
                   <>
@@ -3433,10 +3443,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       <td className="px-1.5 py-0.5 text-right">- {formatBRL(activeOrderPaid)}</td>
                     </tr>
                     <tr className="font-bold bg-gray-50">
-                      <td colSpan={3} className="px-1.5 py-1 border-r border-black text-right">
+                      <td colSpan={3} className="px-1.5 py-0.5 border-r border-black text-right">
                         SALDO RESTANTE
                       </td>
-                      <td className="px-1.5 py-1 text-right">{formatBRL(activeOrderSaldo)}</td>
+                      <td className="px-1.5 py-0.5 text-right">{formatBRL(activeOrderSaldo)}</td>
                     </tr>
                   </>
                 )}
@@ -3444,11 +3454,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             </table>
           </div>
 
-          <div className="block clear-both mb-2 print-avoid-break">
+          <div className="block static w-full clear-both mb-1.5 print-avoid-break">
             <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
               Termos Legais e Garantia (CDC)
             </h3>
-            <div className="border-x border-b border-black p-1.5 text-[8.5px] space-y-1 leading-tight text-justify">
+            <div className="border-x border-b border-black p-1 text-[8px] space-y-0.5 leading-snug text-justify">
               <p>
                 <strong>CONDIÇÕES GERAIS:</strong> {state.cfg.condExec}
               </p>
@@ -3472,10 +3482,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             const showTechSig =
               state.cfg.autoPrintTechSignature !== false && Boolean(state.cfg.techSignatureDataUrl);
             return (
-              <div className="block clear-both pt-2 print-avoid-break">
+              <div className="block static w-full clear-both pt-1.5 print-avoid-break">
                 <div className="grid grid-cols-2 gap-8 text-center text-[9.5px]">
                   <div>
-                    <div className="h-12 flex items-end justify-center mb-1">
+                    <div className="h-11 flex items-end justify-center mb-1">
                       {acceptanceType === 'digital_channel' ? (
                         <div className="border border-black px-2 py-1 text-[8px] font-bold leading-tight bg-gray-50">
                           Aceite confirmado via {activeOrder.clientAcceptanceChannel || 'WhatsApp'}
@@ -3487,7 +3497,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                         <img
                           src={clientSig}
                           alt="Assinatura do Cliente"
-                          className="max-h-12 w-auto object-contain mx-auto"
+                          className="max-h-11 w-auto object-contain mx-auto"
                         />
                       ) : null}
                     </div>
@@ -3496,12 +3506,12 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     <div className="text-[8px] text-gray-600 mt-0.5">Data: ____/____/________</div>
                   </div>
                   <div>
-                    <div className="h-12 flex items-end justify-center mb-1">
+                    <div className="h-11 flex items-end justify-center mb-1">
                       {showTechSig && state.cfg.techSignatureDataUrl && (
                         <img
                           src={state.cfg.techSignatureDataUrl}
                           alt="Assinatura do Técnico"
-                          className="max-h-12 w-auto object-contain mx-auto"
+                          className="max-h-11 w-auto object-contain mx-auto"
                         />
                       )}
                     </div>
@@ -3510,7 +3520,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     <div className="text-[8px] text-gray-600 mt-0.5">Data: ____/____/________</div>
                   </div>
                 </div>
-                <p className="text-center text-[8px] text-gray-500 mt-1.5">
+                <p className="text-center text-[8px] text-gray-500 mt-1">
                   Orçamento antes do serviço · MicroLab OS
                 </p>
               </div>
