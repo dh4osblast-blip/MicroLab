@@ -9,7 +9,7 @@ import {
  * NUNCA incluir em LabState, backups JSON ou firebaseSync.ts.
  */
 export const GEMINI_BYOK_STORAGE_KEY = 'microlab_gemini_byok_key';
-export const GEMINI_MODEL_ID = 'gemini-2.5-flash';
+export const GEMINI_MODEL_ID = 'gemini-3.8-flash';
 
 export function getGeminiByokKey(): string {
   try {

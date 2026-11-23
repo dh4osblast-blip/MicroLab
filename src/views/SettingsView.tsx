@@ -45,6 +45,7 @@ import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { PWAInstallButton } from '../components/PWAComponents';
 import {
   GEMINI_BYOK_STORAGE_KEY,
+  GEMINI_MODEL_ID,
   getGeminiByokKey,
   removeGeminiByokKey,
   saveGeminiByokKey,
@@ -375,7 +376,7 @@ export const SettingsView: React.FC = () => {
       saveGeminiByokKey(candidate);
       setGeminiKeyInput(candidate);
       setGeminiHasSavedKey(true);
-      setGeminiFeedback(res.message);
+      setGeminiFeedback(`${res.message} Chave salva localmente neste navegador.`);
     } else {
       setGeminiError(res.message);
     }
@@ -2595,7 +2596,7 @@ export const SettingsView: React.FC = () => {
 
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] text-[#727784]">
-                Modelo padrão: <code className="font-mono">gemini-2.5-flash</code> · Somente dados técnicos anonimizados (LGPD).
+                Modelo padrão: <code className="font-mono">{GEMINI_MODEL_ID}</code> · Somente dados técnicos anonimizados (LGPD).
               </span>
               <div className="flex flex-wrap items-center gap-2">
                 {geminiHasSavedKey && (
