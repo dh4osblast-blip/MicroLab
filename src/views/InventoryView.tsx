@@ -2,6 +2,8 @@ import React, { useMemo, useState } from 'react';
 import {
   Activity,
   AlertCircle,
+  AlertTriangle,
+  Calendar,
   CheckCircle2,
   Edit3,
   Minus,
@@ -17,9 +19,12 @@ import { PartItem, PurchaseItem } from '../types/lab';
 import { formatBRL, useLabStore } from '../store/useLabStore';
 import {
   calcInventoryTurnover90d,
+  formatStockQty,
+  getPartExpiryStatus,
   isLowStock,
   margemPctPeca,
   precoVendaPeca,
+  roundStockQty,
 } from '../utils/pricing';
 import { PurchaseOrderModal } from '../components/PurchaseOrderModal';
 
@@ -49,10 +54,14 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
   const [pMin, setPMin] = useState('1');
   const [pCost, setPCost] = useState('0');
   const [pSell, setPSell] = useState('0');
+  const [pUnit, setPUnit] = useState('un');
+  const [pExpiryDate, setPExpiryDate] = useState('');
+  const [pFracConsumption, setPFracConsumption] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   // Batch readjust (`reaj`) modal
   const [showReadjustModal, setShowReadjustModal] = useState(false);
+  const [reajMode, setReajMode] = useState<'percent' | 'curve'>('percent');
   const [reajPct, setReajPct] = useState('0');
   const [reajField, setReajField] = useState<'sellPrice' | 'costPrice'>('sellPrice');
   const [reajRound, setReajRound] = useState(true);
@@ -64,6 +73,14 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
   const [toastMsg, setToastMsg] = useState<{ text: string; action?: 'suppliers' } | null>(null);
 
   const criticalParts = useMemo(() => state.parts.filter((p) => isLowStock(p)), [state.parts]);
+  const expiringParts = useMemo(
+    () =>
+      state.parts
+        .map((p) => ({ part: p, exp: getPartExpiryStatus(p.expiryDate) }))
+        .filter((x) => x.exp.status === 'expired' || x.exp.status === 'expiring30')
+        .sort((a, b) => (a.exp.daysRemaining ?? 999) - (b.exp.daysRemaining ?? 999)),
+    [state.parts]
+  );
   const totalInventoryCost = useMemo(
     () => state.parts.reduce((s, p) => s + Math.max(0, p.stock) * p.costPrice, 0),
     [state.parts]
@@ -100,6 +117,9 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
     setPMin('1');
     setPCost('0');
     setPSell('0');
+    setPUnit('un');
+    setPExpiryDate('');
+    setPFracConsumption('');
     setShowPartModal(true);
   };
 
@@ -114,6 +134,9 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
     setPMin(String(p.minStock));
     setPCost(String(p.costPrice));
     setPSell(String(p.sellPrice));
+    setPUnit(p.unit || 'un');
+    setPExpiryDate(p.expiryDate || '');
+    setPFracConsumption(p.fractionalConsumptionPerOs ? String(p.fractionalConsumptionPerOs) : '');
     setShowPartModal(true);
   };
 
@@ -135,7 +158,7 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
       criticalParts.map((p) => ({
         p: p.id,
         d: p.name,
-        q: Math.max((p.minStock || 0) - (p.stock || 0), 1),
+        q: roundStockQty(Math.max((p.minStock || 0) - (p.stock || 0), 1)),
         v: Number(p.costPrice) || 0,
       }))
     );
@@ -145,13 +168,17 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
   const handleSavePart = (e: React.FormEvent) => {
     e.preventDefault();
     if (!pName.trim()) return;
-    const costVal = Math.max(0, parseFloat(pCost) || 0);
+    const costVal = Math.max(0, parseFloat(pCost.replace(',', '.')) || 0);
     const sellVal = Math.max(
       0,
-      parseFloat(pSell) || (costVal > 0 ? precoVendaPeca(costVal, state.cfg.margem, state.cfg.arred) : 0)
+      parseFloat(pSell.replace(',', '.')) || (costVal > 0 ? precoVendaPeca(costVal, state.cfg.margem, state.cfg.arred) : 0)
     );
-    const stockNum = parseInt(pStock, 10) || 0;
-    const minNum = Math.max(0, parseInt(pMin, 10) || 0);
+    const stockNum = roundStockQty(Math.max(0, parseFloat(pStock.replace(',', '.')) || 0));
+    const minNum = roundStockQty(Math.max(0, parseFloat(pMin.replace(',', '.')) || 0));
+    const fracRaw = parseFloat(pFracConsumption.replace(',', '.')) || 0;
+    const fracNum = fracRaw > 0 ? roundStockQty(fracRaw) : undefined;
+    const cleanUnit = pUnit.trim() || undefined;
+    const cleanExpiry = pExpiryDate.trim() || undefined;
 
     if (editingPartId) {
       updatePart(editingPartId, {
@@ -164,6 +191,9 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
         minStock: minNum,
         costPrice: costVal,
         sellPrice: sellVal,
+        unit: cleanUnit,
+        expiryDate: cleanExpiry,
+        fractionalConsumptionPerOs: fracNum,
       });
     } else {
       addPart({
@@ -176,6 +206,9 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
         minStock: minNum,
         costPrice: costVal,
         sellPrice: sellVal,
+        unit: cleanUnit,
+        expiryDate: cleanExpiry,
+        fractionalConsumptionPerOs: fracNum,
         reservedOs: 0,
       });
     }
@@ -185,13 +218,33 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
 
   const handleApplyReadjust = (e: React.FormEvent) => {
     e.preventDefault();
+    if (state.parts.length === 0) return;
     const pct = parseFloat(reajPct.replace(',', '.')) || 0;
-    if (pct === 0 || state.parts.length === 0) return;
+    if (reajMode === 'percent' && pct === 0) return;
     if (!reajConfirming) {
       setReajConfirming(true);
       return;
     }
-    batchReadjustParts(pct, reajField, reajField === 'sellPrice' && reajRound);
+    if (reajMode === 'curve') {
+      batchReadjustParts({
+        mode: 'curve',
+        applyRounding: reajRound,
+      });
+      setShowReadjustModal(false);
+      setReajConfirming(false);
+      setToastMsg({
+        text: `Preços de venda recalculados pela curva oficial da loja em ${state.parts.length} itens.`,
+      });
+      setTimeout(() => setToastMsg(null), 3500);
+      return;
+    }
+
+    batchReadjustParts({
+      mode: 'percent',
+      percent: pct,
+      field: reajField,
+      applyRounding: reajField === 'sellPrice' && reajRound,
+    });
     setShowReadjustModal(false);
     setReajConfirming(false);
     setReajPct('0');
@@ -294,7 +347,9 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
                 {criticalParts.length} {criticalParts.length === 1 ? 'item abaixo' : 'itens abaixo'} do estoque mínimo de segurança
               </p>
               <p className="text-[11px] text-[#414752]">
-                {criticalParts.map((p) => `${p.name} (${p.stock}/${p.minStock})`).join(' · ')}
+                {criticalParts
+                  .map((p) => `${p.name} (${formatStockQty(p.stock, p.unit)}/${formatStockQty(p.minStock, p.unit)})`)
+                  .join(' · ')}
               </p>
             </div>
           </div>
@@ -306,6 +361,34 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
             <ShoppingCart className="w-4 h-4" />
             <span>Gerar Pedido de Reposição</span>
           </button>
+        </div>
+      )}
+
+      {/* Expiry Alert Banner (Insumos vencidos ou vencendo em 30 dias) */}
+      {expiringParts.length > 0 && (
+        <div
+          className={`rounded-2xl p-4 border flex items-start gap-2.5 ${
+            expiringParts.some((x) => x.exp.status === 'expired')
+              ? 'bg-[#FEF2F2] border-[#DC2626]/35'
+              : 'bg-[#FFF7E6] border-[#D97706]/35'
+          }`}
+        >
+          <AlertTriangle
+            className={`w-5 h-5 shrink-0 mt-0.5 ${
+              expiringParts.some((x) => x.exp.status === 'expired')
+                ? 'text-[#DC2626]'
+                : 'text-[#D97706]'
+            }`}
+          />
+          <div className="space-y-1">
+            <p className="text-xs font-bold text-[#091b36]">
+              Alerta de Validade ({expiringParts.length}{' '}
+              {expiringParts.length === 1 ? 'insumo' : 'insumos'})
+            </p>
+            <p className="text-[11px] text-[#414752]">
+              {expiringParts.map(({ part, exp }) => `${part.name} · ${exp.label}`).join(' | ')}
+            </p>
+          </div>
         </div>
       )}
 
@@ -394,19 +477,46 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
               </thead>
               <tbody className="divide-y divide-[#D9E0EC] text-xs">
                 {filtered.map((p) => {
-                  const ratio = Math.min(100, Math.round((p.stock / Math.max(1, p.minStock * 2)) * 100));
+                  const ratio = Math.min(100, Math.round((p.stock / Math.max(0.001, p.minStock * 2)) * 100));
                   const autoCurvePrice = precoVendaPeca(p.costPrice, state.cfg.margem, state.cfg.arred);
                   const isManualPrice =
                     p.costPrice > 0 && p.sellPrice > 0 && Math.abs(p.sellPrice - autoCurvePrice) >= 0.01;
+                  const exp = getPartExpiryStatus(p.expiryDate);
+                  const adjustStep =
+                    p.fractionalConsumptionPerOs && p.fractionalConsumptionPerOs > 0
+                      ? p.fractionalConsumptionPerOs
+                      : 1;
                   return (
                     <tr key={p.id} className="hover:bg-[#F3F6FB]/60">
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-2">
                           <Package className="w-4 h-4 text-[#0056ab] shrink-0" />
                           <div>
-                            <p className="font-bold text-[#091b36]">{p.name}</p>
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <p className="font-bold text-[#091b36]">{p.name}</p>
+                              {p.fractionalConsumptionPerOs && p.fractionalConsumptionPerOs > 0 && (
+                                <span className="px-1.5 py-0.5 rounded bg-[#EAF2FD] text-[#0056ab] text-[10px] font-semibold tabular-nums">
+                                  −{formatStockQty(p.fractionalConsumptionPerOs, p.unit)}/OS
+                                </span>
+                              )}
+                              {exp.status !== 'none' && (
+                                <span
+                                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                    exp.status === 'expired'
+                                      ? 'bg-[#FEE2E2] text-[#DC2626]'
+                                      : exp.status === 'expiring30'
+                                      ? 'bg-[#FFF7E6] text-[#D97706]'
+                                      : 'bg-[#F3F6FB] text-[#414752]'
+                                  }`}
+                                >
+                                  <Calendar className="w-2.5 h-2.5" />
+                                  <span>{exp.label}</span>
+                                </span>
+                              )}
+                            </div>
                             <p className="text-[11px] text-[#727784]">
-                              <span className="font-mono">{p.sku}</span> · {p.compatibility} · Mín: {p.minStock}
+                              <span className="font-mono">{p.sku}</span> · {p.compatibility} · Mín:{' '}
+                              {formatStockQty(p.minStock, p.unit)}
                             </p>
                           </div>
                         </div>
@@ -451,17 +561,19 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
                         <div className="inline-flex items-center gap-1.5">
                           <button
                             type="button"
-                            onClick={() => adjustPartStock(p.id, -1)}
+                            onClick={() => adjustPartStock(p.id, -adjustStep)}
+                            title={`Subtrair ${formatStockQty(adjustStep, p.unit)}`}
                             className="w-7 h-7 rounded-lg border border-[#D9E0EC] bg-white flex items-center justify-center hover:bg-[#F3F6FB] cursor-pointer"
                           >
                             <Minus className="w-3.5 h-3.5" />
                           </button>
-                          <span className="w-8 text-center font-bold text-[#091b36] tabular-nums">
-                            {p.stock}
+                          <span className="min-w-12 text-center font-bold text-[#091b36] tabular-nums">
+                            {formatStockQty(p.stock, p.unit)}
                           </span>
                           <button
                             type="button"
-                            onClick={() => adjustPartStock(p.id, 1)}
+                            onClick={() => adjustPartStock(p.id, adjustStep)}
+                            title={`Somar ${formatStockQty(adjustStep, p.unit)}`}
                             className="w-7 h-7 rounded-lg border border-[#D9E0EC] bg-white flex items-center justify-center hover:bg-[#F3F6FB] cursor-pointer"
                           >
                             <Plus className="w-3.5 h-3.5" />
@@ -687,6 +799,8 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
                 <label className="block text-[10px] font-semibold text-[#414752] mb-1">Qtd</label>
                 <input
                   type="number"
+                  step="any"
+                  min="0"
                   value={pStock}
                   onChange={(e) => setPStock(e.target.value)}
                   className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-2 text-xs tabular-nums"
@@ -696,6 +810,7 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
                 <label className="block text-[10px] font-semibold text-[#414752] mb-1">Mín</label>
                 <input
                   type="number"
+                  step="any"
                   min="0"
                   value={pMin}
                   onChange={(e) => setPMin(e.target.value)}
@@ -721,6 +836,48 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
                   min="0"
                   value={pSell}
                   onChange={(e) => setPSell(e.target.value)}
+                  className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-2 text-xs tabular-nums"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="block text-[10px] font-semibold text-[#414752] mb-1">Unidade</label>
+                <select
+                  value={pUnit}
+                  onChange={(e) => setPUnit(e.target.value)}
+                  className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-2 py-2 text-xs"
+                >
+                  <option value="un">un (unidade)</option>
+                  <option value="g">g (gramas)</option>
+                  <option value="ml">ml (mililitros)</option>
+                  <option value="seringa">seringa</option>
+                  <option value="rolo">rolo</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-[#414752] mb-1">Validade</label>
+                <input
+                  type="date"
+                  value={pExpiryDate}
+                  onChange={(e) => setPExpiryDate(e.target.value)}
+                  className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-2 py-2 text-xs"
+                />
+              </div>
+              <div>
+                <label
+                  className="block text-[10px] font-semibold text-[#414752] mb-1"
+                  title="Quantidade descontada automaticamente do estoque a cada OS entregue"
+                >
+                  Consumo / OS
+                </label>
+                <input
+                  type="number"
+                  step="any"
+                  min="0"
+                  value={pFracConsumption}
+                  onChange={(e) => setPFracConsumption(e.target.value)}
+                  placeholder="0 (manual)"
                   className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-2 text-xs tabular-nums"
                 />
               </div>
@@ -777,41 +934,77 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
               </button>
             </div>
 
-            <div>
-              <label className="block text-[11px] font-semibold text-[#414752] mb-1">
-                Percentual (%, negativo reduz)
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                required
-                value={reajPct}
-                onChange={(e) => {
-                  setReajPct(e.target.value);
+            <div className="grid grid-cols-2 gap-1.5 bg-[#F3F6FB] p-1 rounded-xl border border-[#D9E0EC]">
+              <button
+                type="button"
+                onClick={() => {
+                  setReajMode('percent');
                   setReajConfirming(false);
                 }}
-                className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs font-bold tabular-nums"
-              />
-            </div>
-
-            <div>
-              <label className="block text-[11px] font-semibold text-[#414752] mb-1">
-                Aplicar em
-              </label>
-              <select
-                value={reajField}
-                onChange={(e) => {
-                  setReajField(e.target.value as 'sellPrice' | 'costPrice');
-                  setReajConfirming(false);
-                }}
-                className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs"
+                className={`py-1.5 rounded-lg text-xs font-semibold cursor-pointer ${
+                  reajMode === 'percent' ? 'bg-white text-[#0056ab] shadow-xs' : 'text-[#414752]'
+                }`}
               >
-                <option value="sellPrice">Preço de venda</option>
-                <option value="costPrice">Custo</option>
-              </select>
+                Reajuste %
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setReajMode('curve');
+                  setReajField('sellPrice');
+                  setReajConfirming(false);
+                }}
+                className={`py-1.5 rounded-lg text-xs font-semibold cursor-pointer ${
+                  reajMode === 'curve' ? 'bg-white text-[#0056ab] shadow-xs' : 'text-[#414752]'
+                }`}
+              >
+                Curva da Loja
+              </button>
             </div>
 
-            {reajField === 'sellPrice' && (
+            {reajMode === 'percent' ? (
+              <>
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#414752] mb-1">
+                    Percentual (%, negativo reduz)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={reajPct}
+                    onChange={(e) => {
+                      setReajPct(e.target.value);
+                      setReajConfirming(false);
+                    }}
+                    className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs font-bold tabular-nums"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#414752] mb-1">
+                    Aplicar em
+                  </label>
+                  <select
+                    value={reajField}
+                    onChange={(e) => {
+                      setReajField(e.target.value as 'sellPrice' | 'costPrice');
+                      setReajConfirming(false);
+                    }}
+                    className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs"
+                  >
+                    <option value="sellPrice">Preço de venda</option>
+                    <option value="costPrice">Custo</option>
+                  </select>
+                </div>
+              </>
+            ) : (
+              <div className="rounded-xl bg-[#EAF2FD]/70 border border-[#0056ab]/25 p-3 text-[11px] text-[#091b36] leading-relaxed">
+                Recalcula o <strong>Preço de Venda</strong> de todas as peças com custo &gt; R$ 0,00 usando a curva oficial da loja (limite {formatBRL(state.cfg.margem.limite)} · {state.cfg.margem.baixaMax}%→{state.cfg.margem.baixaMin}% / {state.cfg.margem.altaMax}%→{state.cfg.margem.altaMin}%).
+              </div>
+            )}
+
+            {(reajMode === 'curve' || reajField === 'sellPrice') && (
               <label className="flex items-center gap-2 text-xs text-[#414752] cursor-pointer">
                 <input
                   type="checkbox"
@@ -830,7 +1023,9 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
 
             {reajConfirming && (
               <div className="rounded-xl bg-[#FFFBEB] border border-[#FDE68A] p-2.5 text-xs font-semibold text-[#92400E]">
-                Confirmar reajuste de {reajPct}% em {state.parts.length} itens ({reajField === 'sellPrice' ? 'Preço de venda' : 'Custo'})?
+                {reajMode === 'curve'
+                  ? `Confirmar recálculo do Preço de Venda pela curva oficial em ${state.parts.length} itens?`
+                  : `Confirmar reajuste de ${reajPct}% em ${state.parts.length} itens (${reajField === 'sellPrice' ? 'Preço de venda' : 'Custo'})?`}
               </div>
             )}
 
@@ -847,7 +1042,7 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
               </button>
               <button
                 type="submit"
-                disabled={(parseFloat(reajPct) || 0) === 0}
+                disabled={reajMode === 'percent' && (parseFloat(reajPct) || 0) === 0}
                 className="flex-1 rounded-xl bg-[#0056ab] py-2.5 text-xs font-semibold text-white disabled:opacity-40 cursor-pointer"
               >
                 {reajConfirming ? 'Sim, Aplicar' : 'Revisar'}

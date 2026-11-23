@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   ArrowUpRight,
   Bell,
   Cake,
   Calendar,
+  CalendarClock,
   Check,
   ChevronDown,
   ChevronUp,
@@ -28,8 +30,11 @@ import { RouteId, ServiceOrder } from '../types/lab';
 import { formatBRL, useLabStore } from '../store/useLabStore';
 import {
   calcOrderTotalAmount,
+  calcPendingPayablesSummary,
   diasAteIso,
   formatDateBR,
+  formatStockQty,
+  getPartExpiryStatus,
   todayIsoLocal,
 } from '../utils/pricing';
 
@@ -47,7 +52,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const { state, currentUser, canAccessRoute, markOrderPartArrived } = useLabStore();
   const [filterTab, setFilterTab] = useState<'Todas' | 'Bancada' | 'Aguardando' | 'Prontas'>('Todas');
   const [confirmPartOrderId, setConfirmPartOrderId] = useState<number | null>(null);
-  const [activeAlertTab, setActiveAlertTab] = useState<'birthdays' | 'receivables' | 'agenda'>('agenda');
+  const [activeAlertTab, setActiveAlertTab] = useState<
+    'birthdays' | 'receivables' | 'agenda' | 'payables' | 'expiry'
+  >('agenda');
   const [alertsExpanded, setAlertsExpanded] = useState(false);
   const canSeeFinancialSummary = canAccessRoute('fluxo-de-caixa');
 
@@ -105,8 +112,25 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return list;
   })();
 
+  const payablesSummary = canSeeFinancialSummary
+    ? calcPendingPayablesSummary(state.contasPagar, state.transactions, todayIso)
+    : { saldoComprometido: 0, overdueBills: [], dueTodayBills: [], pendingBills: [] };
+  const duePayableBills = [...payablesSummary.overdueBills, ...payablesSummary.dueTodayBills];
+  const duePayablesTotal = duePayableBills.reduce((s, b) => s + (Number(b.valor) || 0), 0);
+
+  const expiringParts = canAccessRoute('produtos-e-pecas')
+    ? state.parts
+        .map((part) => ({ part, exp: getPartExpiryStatus(part.expiryDate, todayIso) }))
+        .filter((x) => x.exp.status === 'expired' || x.exp.status === 'expiring30')
+        .sort((a, b) => (a.exp.daysRemaining ?? 999) - (b.exp.daysRemaining ?? 999))
+    : [];
+
   const totalDayAlerts =
-    todayBirthdays.length + dueReceivableOrders.length + todayPromisedOrders.length;
+    todayBirthdays.length +
+    dueReceivableOrders.length +
+    todayPromisedOrders.length +
+    duePayableBills.length +
+    expiringParts.length;
 
   const pendingPartsAlertOrders = canAccessRoute('ordens-de-servico')
     ? state.orders
@@ -296,6 +320,49 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </button>
             )}
 
+            {canSeeFinancialSummary && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveAlertTab('payables');
+                  setAlertsExpanded((prev) => (activeAlertTab === 'payables' ? !prev : true));
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  alertsExpanded && activeAlertTab === 'payables'
+                    ? 'bg-[#0056ab] text-white'
+                    : duePayableBills.length > 0
+                    ? 'bg-[#FEE2E2] text-[#DC2626] hover:bg-[#fecaca]'
+                    : 'bg-[#F3F6FB] text-[#727784] hover:text-[#091b36]'
+                }`}
+              >
+                <CalendarClock className="w-3.5 h-3.5" />
+                <span className="tabular-nums">
+                  A pagar ({duePayableBills.length}
+                  {duePayablesTotal > 0 ? ` · ${formatBRL(duePayablesTotal)}` : ''})
+                </span>
+              </button>
+            )}
+
+            {canAccessRoute('produtos-e-pecas') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveAlertTab('expiry');
+                  setAlertsExpanded((prev) => (activeAlertTab === 'expiry' ? !prev : true));
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  alertsExpanded && activeAlertTab === 'expiry'
+                    ? 'bg-[#0056ab] text-white'
+                    : expiringParts.length > 0
+                    ? 'bg-[#FFF7E6] text-[#D97706] hover:bg-[#fef0d1]'
+                    : 'bg-[#F3F6FB] text-[#727784] hover:text-[#091b36]'
+                }`}
+              >
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span className="tabular-nums">Validade ({expiringParts.length})</span>
+              </button>
+            )}
+
             {canAccessRoute('clientes') && (
               <button
                 type="button"
@@ -464,6 +531,90 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </div>
                     );
                   })
+                )}
+              </>
+            )}
+
+            {activeAlertTab === 'payables' && (
+              <>
+                {duePayableBills.length === 0 ? (
+                  <p className="text-[11px] text-[#727784]">
+                    Nenhuma conta a pagar vencida ou vencendo hoje.
+                  </p>
+                ) : (
+                  duePayableBills.map((bill) => {
+                    const days = diasAteIso(bill.vencimento, todayIso) ?? 0;
+                    return (
+                      <div
+                        key={bill.id}
+                        className="flex items-center justify-between gap-2 rounded-lg bg-[#F3F6FB] px-3 py-2 text-xs"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onNavigate('fluxo-de-caixa')}
+                          className="text-left min-w-0 flex-1 cursor-pointer hover:opacity-80"
+                        >
+                          <p className="font-bold text-[#091b36] truncate">
+                            {bill.descricao} · {bill.categoria}
+                          </p>
+                          <p className="text-[10.5px] text-[#414752] truncate">
+                            {bill.fornecedor ? `${bill.fornecedor} · ` : ''}
+                            {days < 0
+                              ? `Vencida há ${-days}d (${formatDateBR(bill.vencimento)})`
+                              : `Vence hoje (${formatDateBR(bill.vencimento)})`}
+                          </p>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onNavigate('fluxo-de-caixa')}
+                          className={`font-mono font-bold whitespace-nowrap shrink-0 tabular-nums hover:underline cursor-pointer ${
+                            days < 0 ? 'text-[#DC2626]' : 'text-[#D97706]'
+                          }`}
+                        >
+                          {formatBRL(bill.valor)}
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </>
+            )}
+
+            {activeAlertTab === 'expiry' && (
+              <>
+                {expiringParts.length === 0 ? (
+                  <p className="text-[11px] text-[#727784]">
+                    Nenhum insumo vencido ou vencendo nos próximos 30 dias.
+                  </p>
+                ) : (
+                  expiringParts.map(({ part, exp }) => (
+                    <div
+                      key={part.id}
+                      className="flex items-center justify-between gap-2 rounded-lg bg-[#F3F6FB] px-3 py-2 text-xs"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onNavigate('produtos-e-pecas')}
+                        className="text-left min-w-0 flex-1 cursor-pointer hover:opacity-80"
+                      >
+                        <p className="font-bold text-[#091b36] truncate">
+                          {part.name} · {part.category}
+                        </p>
+                        <p className="text-[10.5px] text-[#414752] truncate">
+                          Saldo: {formatStockQty(part.stock, part.unit || 'un')} · {exp.label}
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onNavigate('produtos-e-pecas')}
+                        className={`text-[11px] font-bold whitespace-nowrap shrink-0 hover:underline cursor-pointer ${
+                          exp.status === 'expired' ? 'text-[#DC2626]' : 'text-[#D97706]'
+                        }`}
+                      >
+                        {exp.status === 'expired' ? 'Vencido' : 'Ver Estoque'}
+                      </button>
+                    </div>
+                  ))
                 )}
               </>
             )}

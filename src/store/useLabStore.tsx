@@ -12,6 +12,7 @@ import {
   OrderStatus,
   OsPrefillDraft,
   PartItem,
+  PayableBill,
   PowerSupplyMemory,
   PowerSupplyTestEntry,
   PurchaseItem,
@@ -74,9 +75,11 @@ import {
   createDefaultLabConfig,
   formatDateBR,
   getFilaOrders,
+  margemPctPeca,
   planejar,
   precoVendaPeca,
   resolveOrderWarrantyDays,
+  roundStockQty,
   todayIsoLocal,
 } from '../utils/pricing';
 import {
@@ -96,6 +99,14 @@ import {
   saveSyncMetadata,
   stampLabStateChanges,
 } from '../services/firebaseSync';
+import {
+  MediaSlot,
+  buildDeterministicMediaId,
+  clearMediaForUid,
+  extractLegacyOrderMedia,
+  markMediaRecordDeleted,
+  putMediaRecord,
+} from '../services/mediaStore';
 
 export interface VolatileDeviceSecret {
   passcode?: string;
@@ -381,6 +392,7 @@ const createInitialLabState = (): LabState => {
     fixos: DEFAULT_FIXOS_SEED.map((f) => ({ ...f })),
     vendas: [],
     compras: [],
+    contasPagar: [],
     fonteMem: [],
     cfg: defaultCfg,
     interBalances: {
@@ -471,7 +483,34 @@ function hydrateServicosWithSeeds(rawServicos: unknown): ServiceCatalogItem[] {
   return list;
 }
 
-function hydrateLabState(raw: Partial<LabState> | null | undefined): LabState {
+function persistExtractedMediaForUid(
+  uid: string,
+  pendingWrites: Array<{
+    id: string;
+    orderId: number;
+    slot: MediaSlot;
+    dataUrl: string;
+    mime?: string;
+    updatedAt: number;
+  }>
+) {
+  if (!pendingWrites.length) return;
+  const meta = loadSyncMetadata(uid);
+  let metaChanged = false;
+  pendingWrites.forEach((rec) => {
+    if (meta.dirty[`media/${rec.id}`] !== 1) {
+      meta.dirty[`media/${rec.id}`] = 1;
+      metaChanged = true;
+    }
+    void putMediaRecord(uid, rec);
+  });
+  if (metaChanged) saveSyncMetadata(uid, meta);
+}
+
+function hydrateLabState(
+  raw: Partial<LabState> | null | undefined,
+  uidForMediaMigration?: string
+): LabState {
   const base = createInitialLabState();
   if (!raw || typeof raw !== 'object') return base;
   const rawDays = Array.isArray(raw.scheduleDays) && raw.scheduleDays.length > 0 ? raw.scheduleDays : null;
@@ -569,10 +608,34 @@ function hydrateLabState(raw: Partial<LabState> | null | undefined): LabState {
         }))
     : base.fixos;
 
+  const rawOrders = Array.isArray(raw.orders) ? raw.orders : base.orders;
+  let finalOrders = rawOrders;
+  if (uidForMediaMigration !== undefined) {
+    const extracted = extractLegacyOrderMedia(uidForMediaMigration, rawOrders);
+    finalOrders = extracted.orders;
+    if (extracted.pendingWrites.length > 0) {
+      persistExtractedMediaForUid(uidForMediaMigration, extracted.pendingWrites);
+    }
+  }
+
+  const hydratedPayables: PayableBill[] = Array.isArray(raw.contasPagar)
+    ? raw.contasPagar
+        .filter((b): b is PayableBill => Boolean(b && typeof b === 'object'))
+        .map((b) => ({
+          ...b,
+          id: String(b.id || `cpag-${Date.now()}`),
+          descricao: String(b.descricao || 'Conta a pagar'),
+          categoria: String(b.categoria || 'Outros'),
+          valor: Math.max(0, Number(b.valor) || 0),
+          vencimento: String(b.vencimento || todayIsoLocal()),
+          status: b.status === 'Pago' ? 'Pago' : 'Pendente',
+        }))
+    : base.contasPagar;
+
   const merged: LabState = {
     ...base,
     ...raw,
-    orders: Array.isArray(raw.orders) ? raw.orders : base.orders,
+    orders: finalOrders,
     clients: Array.isArray(raw.clients) ? raw.clients : base.clients,
     scheduleDays,
     priorityQueue: Array.isArray(raw.priorityQueue) ? raw.priorityQueue : base.priorityQueue,
@@ -588,6 +651,7 @@ function hydrateLabState(raw: Partial<LabState> | null | undefined): LabState {
     fixos: hydratedFixos,
     vendas: Array.isArray(raw.vendas) ? raw.vendas : base.vendas,
     compras: Array.isArray(raw.compras) ? raw.compras : base.compras,
+    contasPagar: hydratedPayables,
     fonteMem: Array.isArray(raw.fonteMem) ? raw.fonteMem : base.fonteMem,
     cfg: mergedCfg,
     interBalances: mergeDefined(base.interBalances, raw.interBalances),
@@ -601,17 +665,30 @@ function hydrateLabState(raw: Partial<LabState> | null | undefined): LabState {
 
 function loadStateForUid(uid?: string | null): LabState {
   const targetKey = getDbStorageKey(uid);
+  const cleanUid = uid || '';
   try {
     const saved = localStorage.getItem(targetKey);
     if (saved) {
-      const hydrated = hydrateLabState(JSON.parse(saved) as Partial<LabState>);
-      return applyDueFixedExpenses(hydrated).state;
+      const parsedRaw = JSON.parse(saved) as Partial<LabState>;
+      const hadLegacyMedia =
+        Array.isArray(parsedRaw.orders) &&
+        parsedRaw.orders.some((o) => Boolean(o?.evidencePhotos || o?.clientSignatureDataUrl || o?.signatureDataUrl));
+      const hydrated = hydrateLabState(parsedRaw, cleanUid);
+      const withFixos = applyDueFixedExpenses(hydrated).state;
+      if (hadLegacyMedia) {
+        try {
+          localStorage.setItem(targetKey, JSON.stringify(withFixos));
+        } catch {
+          // Ignore quota
+        }
+      }
+      return withFixos;
     }
     // Se unauthenticated ('local') e ainda existe a chave legada v18, migra sanitizada sem manter passcodes
     if (!uid) {
       const legacy = localStorage.getItem(LEGACY_DB_KEY);
       if (legacy) {
-        const parsed = hydrateLabState(JSON.parse(legacy) as Partial<LabState>);
+        const parsed = hydrateLabState(JSON.parse(legacy) as Partial<LabState>, cleanUid);
         const withFixos = applyDueFixedExpenses(parsed).state;
         localStorage.setItem(targetKey, JSON.stringify(withFixos));
         localStorage.removeItem(LEGACY_DB_KEY);
@@ -626,6 +703,7 @@ function loadStateForUid(uid?: string | null): LabState {
 
 interface LabContextValue {
   state: LabState;
+  storageUid: string;
   currentUser: AppUser | null;
   isAtendente: boolean;
   canAccessRoute: (route: RouteId) => boolean;
@@ -661,6 +739,7 @@ interface LabContextValue {
       device: string;
       issue: string;
       status: OrderStatus;
+      clearClientSignature?: boolean;
     };
     volatileSecret?: VolatileDeviceSecret;
   }) => ServiceOrder;
@@ -685,16 +764,31 @@ interface LabContextValue {
   updatePart: (partId: string, partial: Partial<Omit<PartItem, 'id' | 'status'>>) => void;
   deletePart: (partId: string) => void;
   adjustPartStock: (partId: string, delta: number) => void;
-  batchReadjustParts: (
-    percent: number,
-    field: 'sellPrice' | 'costPrice',
-    applyRounding?: boolean
-  ) => void;
+  batchReadjustParts: (input: {
+    mode: 'percent' | 'curve';
+    percent?: number;
+    field?: 'sellPrice' | 'costPrice';
+    applyRounding?: boolean;
+  }) => void;
   addSupplier: (supplier: Omit<Supplier, 'id' | 'initials' | 'rating' | 'rmaRate' | 'rmaStatus'>) => Supplier;
   updateSupplier: (supplierId: string, partial: Partial<Omit<Supplier, 'id'>>) => void;
   deleteSupplier: (supplierId: string) => void;
-  createPurchaseOrder: (input: { forn: string; frete: number; itens: PurchaseItem[] }) => PurchaseRecord;
+  createPurchaseOrder: (input: {
+    forn: string;
+    frete: number;
+    itens: PurchaseItem[];
+    payableDueDate?: string;
+  }) => PurchaseRecord;
   receivePurchaseOrder: (purchaseId: string) => { ok: boolean; error?: string };
+  addPayableBill: (
+    input: Omit<PayableBill, 'id' | 'status'> & { status?: PayableBill['status'] }
+  ) => PayableBill;
+  updatePayableBill: (billId: string, partial: Partial<Omit<PayableBill, 'id'>>) => void;
+  markPayableBillPaid: (
+    billId: string,
+    options?: { channel?: CashTransaction['channel']; isoDate?: string }
+  ) => { ok: boolean; error?: string };
+  deletePayableBill: (billId: string) => void;
   createPosSale: (input: {
     cli?: string;
     cliNome?: string;
@@ -1198,12 +1292,39 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const nowAgoraStr = () => `${todayIsoLocal()} ${nowClockStr()}`;
 
-  const buildOrderStockSnapshot = (o: Pick<ServiceOrder, 'extraItems' | 'clientSuppliedPart' | 'partId'>) => ({
-    items: (o.extraItems || [])
+  const buildOrderStockSnapshot = (
+    o: Pick<ServiceOrder, 'extraItems' | 'clientSuppliedPart' | 'partId' | 'isDiagOnly'>,
+    parts: PartItem[] = []
+  ) => {
+    const items = (o.extraItems || [])
       .filter((x) => Boolean(x.p))
-      .map((x) => ({ p: String(x.p), q: Math.max(0, Number(x.q) || 0) })),
-    pp: o.clientSuppliedPart ? '' : o.partId || '',
-  });
+      .map((x) => ({ p: String(x.p), q: roundStockQty(Math.max(0, Number(x.q) || 0)) }))
+      .filter((x) => x.q > 0);
+
+    let pp = o.clientSuppliedPart ? '' : o.partId || '';
+    if (pp && !o.isDiagOnly) {
+      const ppPart = parts.find((p) => p.id === pp);
+      const frac = Number(ppPart?.fractionalConsumptionPerOs) || 0;
+      if (frac > 0) {
+        items.push({ p: pp, q: roundStockQty(frac) });
+        pp = '';
+      }
+    }
+
+    if (!o.isDiagOnly && parts.length > 0) {
+      const explicitIds = new Set(items.map((x) => x.p));
+      if (pp) explicitIds.add(pp);
+      parts.forEach((part) => {
+        const frac = roundStockQty(Number(part.fractionalConsumptionPerOs) || 0);
+        if (!explicitIds.has(part.id) && frac > 0 && (Number(part.stock) || 0) > 0) {
+          items.push({ p: part.id, q: frac });
+          explicitIds.add(part.id);
+        }
+      });
+    }
+
+    return { items, pp };
+  };
 
   const applyStockSnapshotToParts = (
     parts: PartItem[],
@@ -1212,23 +1333,22 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ): PartItem[] => {
     const deltas: Record<string, number> = {};
     (snap.items || []).forEach((it) => {
-      if (it.p && it.q > 0) deltas[it.p] = (deltas[it.p] || 0) + sign * it.q;
+      if (it.p && it.q > 0) deltas[it.p] = roundStockQty((deltas[it.p] || 0) + sign * it.q);
     });
     if (snap.pp) {
-      deltas[snap.pp] = (deltas[snap.pp] || 0) + sign * 1;
+      deltas[snap.pp] = roundStockQty((deltas[snap.pp] || 0) + sign * 1);
     }
     if (Object.keys(deltas).length === 0) return parts;
     return parts.map((p) => {
       const delta = deltas[p.id];
       if (!delta) return p;
-      const nextStock = Math.max(0, p.stock + delta);
-      const status: PartItem['status'] =
-        nextStock === 0
-          ? 'Esgotado'
-          : nextStock <= p.minStock
-          ? 'Alerta Reposição'
-          : 'Disponível';
-      return { ...p, stock: nextStock, status, updatedAt: Date.now() };
+      const nextStock = roundStockQty(Math.max(0, (Number(p.stock) || 0) + delta));
+      return {
+        ...p,
+        stock: nextStock,
+        status: computePartStatus(nextStock, p.minStock),
+        updatedAt: Date.now(),
+      };
     });
   };
 
@@ -1291,16 +1411,19 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       device: string;
       issue: string;
       status: OrderStatus;
+      clearClientSignature?: boolean;
     };
     volatileSecret?: VolatileDeviceSecret;
   }): ServiceOrder => {
     const prevSnapshot = stateRef.current;
+    const activeUid = authRef.current.uid || '';
     const o0 = id ? prevSnapshot.orders.find((x) => x.id === id) : undefined;
     const maxId = prevSnapshot.orders.reduce((max, o) => Math.max(max, o.id), 0);
     const targetId = o0 ? o0.id : Math.max(maxId, prevSnapshot.counters?.nextOrderNumber || 0) + 1;
     const code = o0 ? o0.code : `#${targetId}`;
     const today = todayIsoLocal();
     const timeStr = nowClockStr();
+    const nowTs = Date.now();
 
     const pcli = Boolean(data.clientSuppliedPart);
     const partCost = pcli ? 0 : Math.max(0, Number(data.partCost) || 0);
@@ -1348,7 +1471,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const partMatch = prevSnapshot.parts.find((p) => p.id === x.p);
         return {
           ...x,
-          q: Math.max(1, Number(x.q) || 1),
+          q: roundStockQty(Math.max(0.001, Number(x.q) || 1)),
           v: Math.max(0, Number(x.v) || 0),
           c:
             o0 && o0.stockDeducted && x.c !== undefined
@@ -1402,6 +1525,117 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       o0?.acceptedAt ||
       (acceptedStatuses.includes(nextStatus) ? nowAgoraStr() : undefined);
 
+    // Fase 4: Desacoplamento de mídias (IndexedDB + media__<id>, zero base64 dentro da OS)
+    const syncMeta = loadSyncMetadata(activeUid);
+    let metaDirtyChanged = false;
+    const nextEvidenceMediaIds: Partial<Record<'front' | 'back' | 'rails' | 'dock', string>> = {
+      ...(o0?.evidenceMediaIds || {}),
+      ...(data.evidenceMediaIds || {}),
+    };
+    if (data.evidencePhotos && typeof data.evidencePhotos === 'object') {
+      (['front', 'back', 'rails', 'dock'] as const).forEach((slot) => {
+        if (!(slot in data.evidencePhotos!)) return;
+        const val = data.evidencePhotos![slot];
+        if (typeof val === 'string' && val.trim().startsWith('data:')) {
+          const mediaId = nextEvidenceMediaIds[slot] || buildDeterministicMediaId(targetId, slot);
+          nextEvidenceMediaIds[slot] = mediaId;
+          const mime = val.match(/^data:([^;]+);/)?.[1] || 'image/webp';
+          void putMediaRecord(activeUid, {
+            id: mediaId,
+            orderId: targetId,
+            slot,
+            dataUrl: val,
+            mime,
+            updatedAt: nowTs,
+          });
+          syncMeta.dirty[`media/${mediaId}`] = 1;
+          metaDirtyChanged = true;
+        } else if (!val && nextEvidenceMediaIds[slot]) {
+          const removedId = nextEvidenceMediaIds[slot]!;
+          delete nextEvidenceMediaIds[slot];
+          void markMediaRecordDeleted(activeUid, removedId, targetId, slot, nowTs);
+          syncMeta.dirty[`media/${removedId}`] = 1;
+          metaDirtyChanged = true;
+        }
+      });
+    }
+    const cleanEvidenceIdsObj = Object.keys(nextEvidenceMediaIds).length > 0 ? nextEvidenceMediaIds : undefined;
+
+    const nextAcceptanceType =
+      data.clientAcceptanceType !== undefined
+        ? data.clientAcceptanceType
+        : o0?.clientAcceptanceType ||
+          (o0?.clientSignatureMediaId || o0?.hasClientSignature || o0?.clientSignatureDataUrl || o0?.signatureDataUrl
+            ? 'screen_signature'
+            : 'printed');
+
+    const incomingSigDataUrl =
+      typeof data.clientSignatureDataUrl === 'string' && data.clientSignatureDataUrl.trim().startsWith('data:')
+        ? data.clientSignatureDataUrl
+        : typeof data.signatureDataUrl === 'string' && data.signatureDataUrl.trim().startsWith('data:')
+        ? data.signatureDataUrl
+        : undefined;
+
+    let nextClientSignatureMediaId =
+      nextAcceptanceType === 'screen_signature'
+        ? data.clientSignatureMediaId ?? o0?.clientSignatureMediaId
+        : undefined;
+    let nextHasClientSignature =
+      nextAcceptanceType === 'screen_signature'
+        ? Boolean(data.hasClientSignature ?? o0?.hasClientSignature ?? nextClientSignatureMediaId)
+        : false;
+
+    if (nextAcceptanceType === 'screen_signature' && incomingSigDataUrl && !data.clearClientSignature) {
+      const sigMediaId = nextClientSignatureMediaId || buildDeterministicMediaId(targetId, 'clientSig');
+      nextClientSignatureMediaId = sigMediaId;
+      nextHasClientSignature = true;
+      const mime = incomingSigDataUrl.match(/^data:([^;]+);/)?.[1] || 'image/png';
+      void putMediaRecord(activeUid, {
+        id: sigMediaId,
+        orderId: targetId,
+        slot: 'clientSig',
+        dataUrl: incomingSigDataUrl,
+        mime,
+        updatedAt: nowTs,
+      });
+      syncMeta.dirty[`media/${sigMediaId}`] = 1;
+      metaDirtyChanged = true;
+    } else if (
+      (nextAcceptanceType !== 'screen_signature' || data.clearClientSignature) &&
+      (o0?.clientSignatureMediaId || nextClientSignatureMediaId)
+    ) {
+      const removedSigId = o0?.clientSignatureMediaId || nextClientSignatureMediaId!;
+      nextClientSignatureMediaId = undefined;
+      nextHasClientSignature = false;
+      void markMediaRecordDeleted(activeUid, removedSigId, targetId, 'clientSig', nowTs);
+      syncMeta.dirty[`media/${removedSigId}`] = 1;
+      metaDirtyChanged = true;
+    }
+
+    if (metaDirtyChanged) {
+      saveSyncMetadata(activeUid, syncMeta);
+      setPendingCount(Object.keys(syncMeta.dirty).length);
+    }
+
+    const nextChannel =
+      nextAcceptanceType === 'digital_channel'
+        ? data.clientAcceptanceChannel !== undefined
+          ? data.clientAcceptanceChannel
+          : o0?.clientAcceptanceChannel || 'WhatsApp'
+        : undefined;
+    const nextAt =
+      nextAcceptanceType === 'digital_channel'
+        ? data.clientAcceptanceAt !== undefined
+          ? data.clientAcceptanceAt
+          : o0?.clientAcceptanceAt
+        : undefined;
+
+    const cleanDataInput = { ...(data as Record<string, unknown>) };
+    delete cleanDataInput.evidencePhotos;
+    delete cleanDataInput.clientSignatureDataUrl;
+    delete cleanDataInput.signatureDataUrl;
+    delete cleanDataInput.clearClientSignature;
+
     const savedOrder: ServiceOrder = {
       ...(o0 || {
         id: targetId,
@@ -1424,9 +1658,13 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         paymentStatus: 'Orçado' as const,
         checklist: { faceId: 'A testar', cameras: 'OK', battery: 'Normal', chassis: 'Íntegro' },
       }),
-      ...data,
+      ...(cleanDataInput as Partial<ServiceOrder>),
       id: targetId,
       code,
+      clientId: data.clientId,
+      clientName: data.clientName,
+      device: data.device,
+      issue: data.issue,
       createdDate: data.createdDate || o0?.createdDate || today,
       serviceCatalogName: svcName,
       partId,
@@ -1459,47 +1697,20 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       deliveredAt,
       warrantyDays,
       warrantyUntil,
-      evidencePhotos: data.evidencePhotos !== undefined ? data.evidencePhotos : o0?.evidencePhotos,
-      ...(() => {
-        const nextAcceptanceType =
-          data.clientAcceptanceType !== undefined
-            ? data.clientAcceptanceType
-            : o0?.clientAcceptanceType ||
-              (o0?.clientSignatureDataUrl || o0?.signatureDataUrl ? 'screen_signature' : 'printed');
-        const nextClientSig =
-          nextAcceptanceType === 'screen_signature'
-            ? data.clientSignatureDataUrl !== undefined
-              ? data.clientSignatureDataUrl
-              : data.signatureDataUrl !== undefined
-              ? data.signatureDataUrl
-              : o0?.clientSignatureDataUrl || o0?.signatureDataUrl
-            : undefined;
-        const nextChannel =
-          nextAcceptanceType === 'digital_channel'
-            ? data.clientAcceptanceChannel !== undefined
-              ? data.clientAcceptanceChannel
-              : o0?.clientAcceptanceChannel || 'WhatsApp'
-            : undefined;
-        const nextAt =
-          nextAcceptanceType === 'digital_channel'
-            ? data.clientAcceptanceAt !== undefined
-              ? data.clientAcceptanceAt
-              : o0?.clientAcceptanceAt
-            : undefined;
-        return {
-          clientAcceptanceType: nextAcceptanceType,
-          clientAcceptanceChannel: nextChannel,
-          clientAcceptanceAt: nextAt,
-          clientSignatureDataUrl: nextClientSig,
-          signatureDataUrl: nextClientSig,
-        };
-      })(),
-      evidenceCount:
-        data.evidencePhotos !== undefined
-          ? Object.values(data.evidencePhotos).filter(Boolean).length
-          : data.evidenceCount ?? o0?.evidenceCount,
-      updatedAt: Date.now(),
+      evidenceMediaIds: cleanEvidenceIdsObj,
+      clientAcceptanceType: nextAcceptanceType,
+      clientAcceptanceChannel: nextChannel,
+      clientAcceptanceAt: nextAt,
+      clientSignatureMediaId: nextClientSignatureMediaId,
+      hasClientSignature: nextHasClientSignature,
+      evidenceCount: cleanEvidenceIdsObj
+        ? Object.values(cleanEvidenceIdsObj).filter(Boolean).length
+        : data.evidenceCount ?? o0?.evidenceCount ?? 0,
+      updatedAt: nowTs,
     };
+    delete savedOrder.evidencePhotos;
+    delete savedOrder.clientSignatureDataUrl;
+    delete savedOrder.signatureDataUrl;
 
     // Volatile secret LGPD handling
     if (nextStatus === 'Entregue' || nextStatus === 'Cancelado') {
@@ -1511,9 +1722,9 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setState((prev) => {
       let nextParts = prev.parts;
       const oldSnap = o0?.stockDeducted
-        ? o0.stockSnapshot || buildOrderStockSnapshot(o0)
+        ? o0.stockSnapshot || buildOrderStockSnapshot(o0, prev.parts)
         : null;
-      const newSnap = buildOrderStockSnapshot(savedOrder);
+      const newSnap = buildOrderStockSnapshot(savedOrder, prev.parts);
 
       if (nextStatus === 'Entregue' && !o0?.stockDeducted) {
         nextParts = applyStockSnapshotToParts(nextParts, newSnap, -1);
@@ -1596,9 +1807,9 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!target) return prev;
       let nextParts = prev.parts;
       const oldSnap = target.stockDeducted
-        ? target.stockSnapshot || buildOrderStockSnapshot(target)
+        ? target.stockSnapshot || buildOrderStockSnapshot(target, prev.parts)
         : null;
-      const newSnap = buildOrderStockSnapshot(target);
+      const newSnap = buildOrderStockSnapshot(target, prev.parts);
 
       let stockDeducted = target.stockDeducted;
       let stockSnapshot = target.stockSnapshot;
@@ -1734,7 +1945,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       let nextParts = prev.parts;
       if (target.stockDeducted) {
-        const snap = target.stockSnapshot || buildOrderStockSnapshot(target);
+        const snap = target.stockSnapshot || buildOrderStockSnapshot(target, prev.parts);
         nextParts = applyStockSnapshotToParts(nextParts, snap, 1);
       }
 
@@ -1838,12 +2049,35 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     clearVolatileSecret(orderId);
+    const activeUid = authRef.current.uid || '';
+    const targetToRemove = stateRef.current.orders.find((o) => o.id === orderId);
+    if (targetToRemove) {
+      const mediaEntries: Array<{ id: string; slot: MediaSlot }> = [
+        ...(['front', 'back', 'rails', 'dock'] as const)
+          .filter((slot) => Boolean(targetToRemove.evidenceMediaIds?.[slot]))
+          .map((slot) => ({ id: targetToRemove.evidenceMediaIds![slot]!, slot })),
+        ...(targetToRemove.clientSignatureMediaId
+          ? [{ id: targetToRemove.clientSignatureMediaId, slot: 'clientSig' as MediaSlot }]
+          : []),
+      ];
+      if (mediaEntries.length > 0) {
+        const syncMeta = loadSyncMetadata(activeUid);
+        const ts = Date.now();
+        mediaEntries.forEach(({ id: mid, slot }) => {
+          void markMediaRecordDeleted(activeUid, mid, orderId, slot, ts);
+          syncMeta.dirty[`media/${mid}`] = 1;
+        });
+        saveSyncMetadata(activeUid, syncMeta);
+        setPendingCount(Object.keys(syncMeta.dirty).length);
+      }
+    }
+
     setState((prev) => {
       const target = prev.orders.find((o) => o.id === orderId);
       if (!target) return prev;
       let nextParts = prev.parts;
       if (target.stockDeducted) {
-        const snap = target.stockSnapshot || buildOrderStockSnapshot(target);
+        const snap = target.stockSnapshot || buildOrderStockSnapshot(target, prev.parts);
         nextParts = applyStockSnapshotToParts(nextParts, snap, 1);
       }
 
@@ -2183,9 +2417,19 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addPart = (partInput: Omit<PartItem, 'id' | 'status'>) => {
-    const status = computePartStatus(partInput.stock, partInput.minStock);
+    const cleanStock = roundStockQty(Math.max(0, Number(partInput.stock) || 0));
+    const cleanMin = roundStockQty(Math.max(0, Number(partInput.minStock) || 0));
+    const status = computePartStatus(cleanStock, cleanMin);
     const newPart: PartItem = {
       ...partInput,
+      stock: cleanStock,
+      minStock: cleanMin,
+      unit: partInput.unit?.trim() || undefined,
+      expiryDate: partInput.expiryDate?.trim() || undefined,
+      fractionalConsumptionPerOs:
+        partInput.fractionalConsumptionPerOs !== undefined && Number(partInput.fractionalConsumptionPerOs) > 0
+          ? roundStockQty(Number(partInput.fractionalConsumptionPerOs))
+          : undefined,
       id: `part-${Date.now()}`,
       status,
       updatedAt: Date.now(),
@@ -2202,13 +2446,26 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...prev,
       parts: prev.parts.map((p) => {
         if (p.id !== partId) return p;
-        const nextStock = partial.stock !== undefined ? Number(partial.stock) || 0 : p.stock;
-        const nextMin = partial.minStock !== undefined ? Math.max(0, Number(partial.minStock) || 0) : p.minStock;
+        const nextStock =
+          partial.stock !== undefined ? roundStockQty(Math.max(0, Number(partial.stock) || 0)) : p.stock;
+        const nextMin =
+          partial.minStock !== undefined ? roundStockQty(Math.max(0, Number(partial.minStock) || 0)) : p.minStock;
+        const nextUnit = partial.unit !== undefined ? partial.unit.trim() || undefined : p.unit;
+        const nextExpiry = partial.expiryDate !== undefined ? partial.expiryDate.trim() || undefined : p.expiryDate;
+        const nextFrac =
+          partial.fractionalConsumptionPerOs !== undefined
+            ? Number(partial.fractionalConsumptionPerOs) > 0
+              ? roundStockQty(Number(partial.fractionalConsumptionPerOs))
+              : undefined
+            : p.fractionalConsumptionPerOs;
         return {
           ...p,
           ...partial,
           stock: nextStock,
           minStock: nextMin,
+          unit: nextUnit,
+          expiryDate: nextExpiry,
+          fractionalConsumptionPerOs: nextFrac,
           status: computePartStatus(nextStock, nextMin),
           updatedAt: Date.now(),
         };
@@ -2230,7 +2487,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...prev,
       parts: prev.parts.map((p) => {
         if (p.id !== partId) return p;
-        const nextStock = Math.max(0, Math.round((p.stock + delta) * 100) / 100);
+        const nextStock = roundStockQty(Math.max(0, (Number(p.stock) || 0) + delta));
         return {
           ...p,
           stock: nextStock,
@@ -2242,12 +2499,36 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     scheduleCloudSync(3500);
   };
 
-  const batchReadjustParts = (
-    percent: number,
-    field: 'sellPrice' | 'costPrice',
-    applyRounding = field === 'sellPrice'
-  ) => {
-    const pct = Number(percent) || 0;
+  const batchReadjustParts = (input: {
+    mode: 'percent' | 'curve';
+    percent?: number;
+    field?: 'sellPrice' | 'costPrice';
+    applyRounding?: boolean;
+  }) => {
+    if (input.mode === 'curve') {
+      const useRounding = input.applyRounding !== false;
+      setState((prev) => ({
+        ...prev,
+        parts: prev.parts.map((p) => {
+          const cost = Math.max(0, Number(p.costPrice) || 0);
+          if (cost <= 0) return p;
+          const nextSell = useRounding
+            ? precoVendaPeca(cost, prev.cfg.margem, prev.cfg.arred)
+            : Math.round(cost * (1 + margemPctPeca(cost, prev.cfg.margem) / 100) * 100) / 100;
+          return {
+            ...p,
+            sellPrice: nextSell,
+            updatedAt: Date.now(),
+          };
+        }),
+      }));
+      scheduleCloudSync(3500);
+      return;
+    }
+
+    const field = input.field || 'sellPrice';
+    const applyRounding = input.applyRounding ?? field === 'sellPrice';
+    const pct = Number(input.percent) || 0;
     if (pct === 0) return;
     const factor = 1 + pct / 100;
     setState((prev) => ({
@@ -2329,6 +2610,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     forn: string;
     frete: number;
     itens: PurchaseItem[];
+    payableDueDate?: string;
   }): PurchaseRecord => {
     const maxN = stateRef.current.compras.reduce((m, c) => Math.max(m, Number(c.n) || 0), 0);
     const nextN = Math.max(maxN, stateRef.current.counters?.nextPurchaseNumber || 0) + 1;
@@ -2337,12 +2619,13 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .map((x) => ({
         p: x.p || undefined,
         d: x.d.trim(),
-        q: Math.max(1, Number(x.q) || 1),
+        q: roundStockQty(Math.max(0.001, Number(x.q) || 1)),
         v: Math.max(0, Number(x.v) || 0),
       }));
 
+    const nowTs = Date.now();
     const purchase: PurchaseRecord = {
-      id: `cp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+      id: `cp-${nowTs.toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
       n: nextN,
       data: todayIsoLocal(),
       forn: input.forn,
@@ -2350,18 +2633,43 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       frete: Math.max(0, Number(input.frete) || 0),
       desc: 0,
       itens: cleanItems,
-      updatedAt: Date.now(),
+      updatedAt: nowTs,
     };
 
-    setState((prev) => ({
-      ...prev,
-      compras: [purchase, ...prev.compras],
-      counters: {
-        nextOrderNumber: prev.counters?.nextOrderNumber || 0,
-        nextSaleNumber: prev.counters?.nextSaleNumber || 0,
-        nextPurchaseNumber: nextN,
-      },
-    }));
+    const totalCompra = calcPurchaseTotalAmount(purchase);
+    const dueDate = (input.payableDueDate || '').trim();
+    const shouldSchedulePayable = /^\d{4}-\d{2}-\d{2}$/.test(dueDate) && totalCompra > 0;
+
+    setState((prev) => {
+      const supName =
+        prev.suppliers.find((s) => s.id === purchase.forn || s.name === purchase.forn)?.name ||
+        purchase.forn ||
+        'Fornecedor';
+      const createdBill: PayableBill | null = shouldSchedulePayable
+        ? {
+            id: `cpag-${nowTs.toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+            descricao: `Compra nº ${purchase.n}`,
+            categoria: 'Peças',
+            fornecedor: supName,
+            valor: totalCompra,
+            vencimento: dueDate,
+            status: 'Pendente',
+            purchaseId: purchase.id,
+            updatedAt: nowTs,
+          }
+        : null;
+
+      return {
+        ...prev,
+        compras: [purchase, ...prev.compras],
+        contasPagar: createdBill ? [createdBill, ...(prev.contasPagar || [])] : prev.contasPagar,
+        counters: {
+          nextOrderNumber: prev.counters?.nextOrderNumber || 0,
+          nextSaleNumber: prev.counters?.nextSaleNumber || 0,
+          nextPurchaseNumber: nextN,
+        },
+      };
+    });
     scheduleCloudSync(3000);
     return purchase;
   };
@@ -2400,7 +2708,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const autoCurveBefore = precoVendaPeca(p.costPrice, prev.cfg.margem, prev.cfg.arred);
         const auto = !(p.sellPrice > 0) || Math.abs(p.sellPrice - autoCurveBefore) < 0.005;
 
-        const nextStock = (Number(p.stock) || 0) + q;
+        const nextStock = roundStockQty((Number(p.stock) || 0) + q);
         let nextCost = Number(p.costPrice) || 0;
         let nextSell = Number(p.sellPrice) || 0;
         if (v > 0) {
@@ -2428,20 +2736,29 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         order.forn ||
         'Fornecedor';
 
-      const tx: CashTransaction = {
-        id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-        title: `Compra nº ${order.n}`,
-        subtitle: `${supName} · ${order.itens.length} ${order.itens.length === 1 ? 'item' : 'itens'}`,
-        tag: 'Peças',
-        channel: 'Fornecedores',
-        type: 'out',
-        amount: totalCompra,
-        dateLabel: `Hoje, ${timeStr}`,
-        isoDate: today,
-        kind: 'compra',
-        reconciled: true,
-        updatedAt: Date.now(),
-      };
+      // Evita dupla contagem caso a compra tenha conta a pagar agendada ou já baixada no caixa
+      const hasLinkedBillOrTx =
+        (prev.contasPagar || []).some((b) => b.purchaseId === order.id) ||
+        prev.transactions.some((t) => t.purchaseId === order.id && t.kind === 'compra');
+
+      const tx: CashTransaction | null =
+        totalCompra > 0 && !hasLinkedBillOrTx
+          ? {
+              id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+              title: `Compra nº ${order.n}`,
+              subtitle: `${supName} · ${order.itens.length} ${order.itens.length === 1 ? 'item' : 'itens'}`,
+              tag: 'Peças',
+              channel: 'Fornecedores',
+              type: 'out',
+              amount: totalCompra,
+              dateLabel: `Hoje, ${timeStr}`,
+              isoDate: today,
+              purchaseId: order.id,
+              kind: 'compra',
+              reconciled: true,
+              updatedAt: Date.now(),
+            }
+          : null;
 
       const nextState: LabState = {
         ...prev,
@@ -2451,13 +2768,127 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ? { ...c, st: 'Recebido', recebido: today, updatedAt: Date.now() }
             : c
         ),
-        transactions: totalCompra > 0 ? [tx, ...prev.transactions] : prev.transactions,
+        transactions: tx ? [tx, ...prev.transactions] : prev.transactions,
       };
       return reconcileDerivedFromCfg(nextState);
     });
 
     scheduleCloudSync(2500);
     return { ok: true };
+  };
+
+  const addPayableBill = (
+    input: Omit<PayableBill, 'id' | 'status'> & { status?: PayableBill['status'] }
+  ): PayableBill => {
+    const nowTs = Date.now();
+    const created: PayableBill = {
+      ...input,
+      id: `cpag-${nowTs.toString(36)}-${Math.random().toString(36).slice(2, 5)}`,
+      descricao: input.descricao.trim(),
+      categoria: input.categoria.trim() || 'Outros',
+      fornecedor: input.fornecedor?.trim() || undefined,
+      valor: Math.max(0, Math.round((Number(input.valor) || 0) * 100) / 100),
+      vencimento: input.vencimento || todayIsoLocal(),
+      status: input.status === 'Pago' ? 'Pago' : 'Pendente',
+      updatedAt: nowTs,
+    };
+    setState((prev) => ({
+      ...prev,
+      contasPagar: [created, ...(prev.contasPagar || [])],
+    }));
+    scheduleCloudSync(3000);
+    return created;
+  };
+
+  const updatePayableBill = (billId: string, partial: Partial<Omit<PayableBill, 'id'>>) => {
+    setState((prev) => ({
+      ...prev,
+      contasPagar: (prev.contasPagar || []).map((b) =>
+        b.id === billId ? { ...b, ...partial, updatedAt: Date.now() } : b
+      ),
+    }));
+    scheduleCloudSync(3000);
+  };
+
+  const markPayableBillPaid = (
+    billId: string,
+    options?: { channel?: CashTransaction['channel']; isoDate?: string }
+  ): { ok: boolean; error?: string } => {
+    const target = (stateRef.current.contasPagar || []).find((b) => b.id === billId);
+    if (!target) return { ok: false, error: 'Conta a pagar não encontrada.' };
+    if (target.status === 'Pago') return { ok: false, error: 'Esta conta já foi paga.' };
+
+    const today = todayIsoLocal();
+    const payDate = options?.isoDate || today;
+    const timeStr = nowClockStr();
+
+    setState((prev) => {
+      const bill = (prev.contasPagar || []).find((b) => b.id === billId);
+      if (!bill || bill.status === 'Pago') return prev;
+
+      const alreadyPaidInCash =
+        Boolean(bill.txId && prev.transactions.some((t) => t.id === bill.txId)) ||
+        Boolean(
+          bill.purchaseId &&
+            prev.transactions.some((t) => t.purchaseId === bill.purchaseId && t.kind === 'compra')
+        ) ||
+        prev.transactions.some((t) => t.payableBillId === bill.id);
+
+      const channel: CashTransaction['channel'] =
+        options?.channel ||
+        (bill.categoria === 'Peças'
+          ? 'Fornecedores'
+          : bill.categoria === 'Aluguel' || bill.categoria === 'Internet'
+          ? 'Fixo'
+          : 'PIX');
+
+      const newTx: CashTransaction | null =
+        !alreadyPaidInCash && bill.valor > 0
+          ? {
+              id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+              title: bill.descricao,
+              subtitle: `${bill.fornecedor ? `${bill.fornecedor} · ` : ''}Baixa Contas a Pagar (${bill.categoria})`,
+              tag: bill.categoria || 'Outros',
+              channel,
+              type: 'out',
+              amount: bill.valor,
+              dateLabel: payDate === today ? `Hoje, ${timeStr}` : formatDateBR(payDate),
+              isoDate: payDate,
+              purchaseId: bill.purchaseId,
+              payableBillId: bill.id,
+              kind: bill.purchaseId ? 'compra' : 'pagar',
+              reconciled: true,
+              updatedAt: Date.now(),
+            }
+          : null;
+
+      return reconcileDerivedFromCfg({
+        ...prev,
+        contasPagar: (prev.contasPagar || []).map((b) =>
+          b.id === billId
+            ? {
+                ...b,
+                status: 'Pago',
+                dataPagamento: payDate,
+                txId: newTx?.id || b.txId,
+                updatedAt: Date.now(),
+              }
+            : b
+        ),
+        transactions: newTx ? [newTx, ...prev.transactions] : prev.transactions,
+      });
+    });
+
+    scheduleCloudSync(2500);
+    return { ok: true };
+  };
+
+  const deletePayableBill = (billId: string) => {
+    setState((prev) => ({
+      ...prev,
+      contasPagar: (prev.contasPagar || []).filter((b) => b.id !== billId),
+    }));
+    scheduleCloudSync(3000);
   };
 
   const createPosSale = (input: {
@@ -2480,7 +2911,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return {
           p: x.p || undefined,
           d: x.d.trim(),
-          q: Math.max(1, Number(x.q) || 1),
+          q: roundStockQty(Math.max(0.001, Number(x.q) || 1)),
           v: Math.max(0, Number(x.v) || 0),
           c: x.c !== undefined ? Number(x.c) || 0 : part ? Number(part.costPrice) || 0 : 0,
         };
@@ -2507,12 +2938,12 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setState((prev) => {
       const qtyByPart: Record<string, number> = {};
       cleanItems.forEach((x) => {
-        if (x.p) qtyByPart[x.p] = (qtyByPart[x.p] || 0) + x.q;
+        if (x.p) qtyByPart[x.p] = roundStockQty((qtyByPart[x.p] || 0) + x.q);
       });
       const nextParts = prev.parts.map((p) => {
         const dec = qtyByPart[p.id];
         if (!dec) return p;
-        const nextStock = Math.round((p.stock - dec) * 100) / 100;
+        const nextStock = roundStockQty(Math.max(0, p.stock - dec));
         return {
           ...p,
           stock: nextStock,
@@ -2573,13 +3004,13 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const qtyByPart: Record<string, number> = {};
       (sale.itens || []).forEach((x) => {
-        if (x.p) qtyByPart[x.p] = (qtyByPart[x.p] || 0) + (Number(x.q) || 0);
+        if (x.p) qtyByPart[x.p] = roundStockQty((qtyByPart[x.p] || 0) + (Number(x.q) || 0));
       });
 
       const nextParts = prev.parts.map((p) => {
         const inc = qtyByPart[p.id];
         if (!inc) return p;
-        const nextStock = Math.round((p.stock + inc) * 100) / 100;
+        const nextStock = roundStockQty(Math.max(0, p.stock + inc));
         return {
           ...p,
           stock: nextStock,
@@ -2755,9 +3186,24 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
       }
 
+      const nextContasPagar = tx.payableBillId
+        ? (prev.contasPagar || []).map((b) =>
+            b.id === tx.payableBillId || b.txId === tx.id
+              ? {
+                  ...b,
+                  status: 'Pendente' as const,
+                  dataPagamento: undefined,
+                  txId: undefined,
+                  updatedAt: Date.now(),
+                }
+              : b
+          )
+        : prev.contasPagar;
+
       return reconcileDerivedFromCfg({
         ...prev,
         orders: nextOrders,
+        contasPagar: nextContasPagar,
         transactions: prev.transactions.filter((t) => t.id !== txId),
       });
     });
@@ -3183,10 +3629,11 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!parsed || !Array.isArray(parsed.orders) || !Array.isArray(parsed.clients)) {
         return { ok: false, error: 'Arquivo JSON inválido: estrutura MicroLab OS não reconhecida.' };
       }
-      const clean = applyDueFixedExpenses(hydrateLabState(parsed)).state;
       const uid = auth.uid || '';
       saveSyncMetadata(uid, emptySyncMetadata(uid));
+      const clean = applyDueFixedExpenses(hydrateLabState(parsed, uid)).state;
       setState(clean);
+      setPendingCount(Object.keys(loadSyncMetadata(uid).dirty).length);
       setVolatileSecrets({});
       return { ok: true };
     } catch {
@@ -3200,6 +3647,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!uid) {
       localStorage.removeItem(LEGACY_DB_KEY);
     }
+    void clearMediaForUid(uid);
     saveSyncMetadata(uid, emptySyncMetadata(uid));
     setVolatileSecrets({});
     setPendingCount(0);
@@ -3232,6 +3680,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     <LabContext.Provider
       value={{
         state,
+        storageUid: auth.uid || '',
         currentUser,
         isAtendente,
         canAccessRoute,
@@ -3278,6 +3727,10 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteSupplier,
         createPurchaseOrder,
         receivePurchaseOrder,
+        addPayableBill,
+        updatePayableBill,
+        markPayableBillPaid,
+        deletePayableBill,
         createPosSale,
         reversePosSale,
         addTransaction,

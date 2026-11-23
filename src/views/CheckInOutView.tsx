@@ -25,6 +25,7 @@ import {
 } from '../utils/pricing';
 import { AndroidPatternLock } from '../components/AndroidPatternLock';
 import { PreDiagnosisPanel } from '../components/PreDiagnosisPanel';
+import { compressEvidenceImage } from '../services/mediaStore';
 
 interface CheckInOutViewProps {
   defaultTab?: 'checkin' | 'checkout';
@@ -40,45 +41,6 @@ const EVIDENCE_SLOTS: { id: EvidenceSlotId; title: string; note: string }[] = [
   { id: 'rails', title: 'Laterais & Parafusos', note: 'Sem sinais de violação' },
   { id: 'dock', title: 'Conector & Lacre Entrada', note: 'Oxidação negativa no pino' },
 ];
-
-async function resizeEvidencePhoto640Jpeg(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Não foi possível ler o arquivo de imagem.'));
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error('Formato de imagem inválido.'));
-      img.onload = () => {
-        const maxSide = 640;
-        let w = img.width;
-        let h = img.height;
-        if (w > maxSide || h > maxSide) {
-          if (w >= h) {
-            h = Math.round((h * maxSide) / w);
-            w = maxSide;
-          } else {
-            w = Math.round((w * maxSide) / h);
-            h = maxSide;
-          }
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          reject(new Error('Canvas indisponível neste navegador.'));
-          return;
-        }
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, w, h);
-        ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.65));
-      };
-      img.src = String(reader.result || '');
-    };
-    reader.readAsDataURL(file);
-  });
-}
 
 const normStr = (s: string) =>
   String(s || '')
@@ -280,8 +242,8 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
     if (!file) return;
     setEvidenceError('');
     try {
-      const resizedDataUrl = await resizeEvidencePhoto640Jpeg(file);
-      setEvidencePhotos((prev) => ({ ...prev, [slotId]: resizedDataUrl }));
+      const { dataUrl } = await compressEvidenceImage(file, 600, 0.58);
+      setEvidencePhotos((prev) => ({ ...prev, [slotId]: dataUrl }));
     } catch (err) {
       setEvidenceError(err instanceof Error ? err.message : 'Não foi possível processar a foto.');
     }

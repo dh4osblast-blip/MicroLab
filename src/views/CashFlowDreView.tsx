@@ -3,6 +3,9 @@ import {
   AlertTriangle,
   ArrowDownLeft,
   ArrowUpRight,
+  Award,
+  CalendarClock,
+  Check,
   CheckCircle2,
   Download,
   Info,
@@ -30,7 +33,10 @@ import {
   calcEffectivePricingFromConfig,
   calcFinLayers,
   calcOrderApprovalRate,
+  calcPendingPayablesSummary,
+  calcTopExecutedServices,
   classifyExpenseTx,
+  diasAteIso,
   formatDateBR,
   isRefundOrReversalTx,
   resolveTransactionIsoDate,
@@ -50,6 +56,9 @@ export const CashFlowDreView: React.FC = () => {
     addTransaction,
     recordWarrantyExpense,
     deleteTransaction,
+    addPayableBill,
+    markPayableBillPaid,
+    deletePayableBill,
     syncNow,
   } = useLabStore();
 
@@ -57,6 +66,7 @@ export const CashFlowDreView: React.FC = () => {
   const [channelFilter, setChannelFilter] = useState<'Todos' | CashTransaction['channel']>('Todos');
   const [showTxModal, setShowTxModal] = useState(false);
   const [showGarModal, setShowGarModal] = useState(false);
+  const [showPayableModal, setShowPayableModal] = useState(false);
   const [showInativosModal, setShowInativosModal] = useState(false);
   const [confirmDeleteTxId, setConfirmDeleteTxId] = useState<string | null>(null);
   const [feedbackError, setFeedbackError] = useState('');
@@ -76,6 +86,17 @@ export const CashFlowDreView: React.FC = () => {
   const [garOrderId, setGarOrderId] = useState<string>('');
   const [garDesc, setGarDesc] = useState('');
   const [garAmount, setGarAmount] = useState('');
+
+  // Contas a Pagar (`contasPagar` v1.5 Cortex)
+  const [payablesFilter, setPayablesFilter] = useState<'Pendentes' | 'Vencidas' | 'Pagas' | 'Todas'>('Pendentes');
+  const [billDesc, setBillDesc] = useState('');
+  const [billSupplier, setBillSupplier] = useState('');
+  const [billCategory, setBillCategory] = useState(() => state.cfg.catDesp[0] || 'Outros');
+  const [billValue, setBillValue] = useState('');
+  const [billDue, setBillDue] = useState(() => todayIsoLocal());
+  const [settlingBillId, setSettlingBillId] = useState<string | null>(null);
+  const [settleChannel, setSettleChannel] = useState<CashTransaction['channel']>('PIX');
+  const [confirmDeleteBillId, setConfirmDeleteBillId] = useState<string | null>(null);
 
   const isAdmin = currentUser?.nivel === 'Administrador';
 
@@ -164,6 +185,29 @@ export const CashFlowDreView: React.FC = () => {
       .sort((a, b) => resolveTransactionIsoDate(b).localeCompare(resolveTransactionIsoDate(a)));
   }, [K.filteredTxs, channelFilter]);
 
+  const todayIso = todayIsoLocal();
+  const payablesSummary = useMemo(
+    () => calcPendingPayablesSummary(state.contasPagar, state.transactions, todayIso),
+    [state.contasPagar, state.transactions, todayIso]
+  );
+
+  const filteredPayables = useMemo(() => {
+    const all = [...(state.contasPagar || [])].sort((a, b) =>
+      String(a.vencimento || '').localeCompare(String(b.vencimento || ''))
+    );
+    if (payablesFilter === 'Pendentes') return all.filter((b) => b.status === 'Pendente');
+    if (payablesFilter === 'Vencidas') {
+      return all.filter((b) => b.status === 'Pendente' && Boolean(b.vencimento) && b.vencimento < todayIso);
+    }
+    if (payablesFilter === 'Pagas') return all.filter((b) => b.status === 'Pago');
+    return all;
+  }, [state.contasPagar, payablesFilter, todayIso]);
+
+  const topServices = useMemo(
+    () => calcTopExecutedServices(state.orders, state.servicos),
+    [state.orders, state.servicos]
+  );
+
   const liq = Math.max(0, K.bruto - K.dev);
   const metaFatPct = Q.metaFat > 0 ? Math.min(100, Math.round((liq / Q.metaFat) * 100)) : 0;
   const shareOfRp = (v: number) => (K.Rp > 0 ? Math.max(0, Math.min(100, (v / K.Rp) * 100)) : 0);
@@ -248,6 +292,34 @@ export const CashFlowDreView: React.FC = () => {
       setFeedbackError(res.error);
     }
     setConfirmDeleteTxId(null);
+  };
+
+  const handleCreatePayableBill = (e: React.FormEvent) => {
+    e.preventDefault();
+    setFeedbackError('');
+    const amt = Math.round((parseFloat(billValue.replace(',', '.')) || 0) * 100) / 100;
+    if (!billDesc.trim() || amt <= 0) return;
+    addPayableBill({
+      descricao: billDesc.trim(),
+      fornecedor: billSupplier.trim() || undefined,
+      categoria: billCategory || 'Outros',
+      valor: amt,
+      vencimento: billDue || todayIsoLocal(),
+    });
+    setShowPayableModal(false);
+    setBillDesc('');
+    setBillSupplier('');
+    setBillValue('');
+    setBillDue(todayIsoLocal());
+  };
+
+  const handleConfirmSettleBill = (billId: string) => {
+    setFeedbackError('');
+    const res = markPayableBillPaid(billId, { channel: settleChannel });
+    if (!res.ok && res.error) {
+      setFeedbackError(res.error);
+    }
+    setSettlingBillId(null);
   };
 
   const channelBreakdown = (['PIX', 'Dinheiro', 'Fornecedores', 'Fixo'] as const).map((ch) => {
@@ -385,7 +457,7 @@ export const CashFlowDreView: React.FC = () => {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
             <div className="rounded-xl bg-white/15 px-3 py-2">
               <span className="text-[10px] text-orange-100 block">
                 Envelope 1 · Reposição de Peças (mês)
@@ -397,6 +469,20 @@ export const CashFlowDreView: React.FC = () => {
                 Pró-labore Produzido (mês)
               </span>
               <strong className="text-sm font-bold tabular-nums">{formatBRL(kMes.prol)}</strong>
+            </div>
+            <div className="rounded-xl bg-white/20 px-3 py-2">
+              <span className="text-[10px] text-orange-100 block">
+                Saldo Comprometido (A Pagar)
+              </span>
+              <strong className="text-sm font-bold tabular-nums">
+                {formatBRL(payablesSummary.saldoComprometido)}
+              </strong>
+              <span className="text-[10px] text-orange-100 block tabular-nums">
+                {payablesSummary.pendingBills.length} pendente(s)
+                {payablesSummary.overdueBills.length > 0
+                  ? ` · ${payablesSummary.overdueBills.length} vencida(s)`
+                  : ''}
+              </span>
             </div>
           </div>
 
@@ -844,8 +930,8 @@ export const CashFlowDreView: React.FC = () => {
         </details>
       </section>
 
-      {/* Indicadores Auxiliares (Taxa Aprovação + Clientes Inativos +90d) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+      {/* Indicadores Auxiliares (Taxa Aprovação + Clientes Inativos +90d + Saldo Comprometido) */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
         <div className="rounded-2xl bg-white p-4 border border-[#D9E0EC] flex items-center justify-between">
           <div>
             <span className="text-[11px] font-semibold text-[#727784] block">Aprovação de Orçamentos</span>
@@ -875,6 +961,266 @@ export const CashFlowDreView: React.FC = () => {
             <Users className="w-8 h-8 text-[#16A34A]/30" />
           )}
         </div>
+
+        <div className="rounded-2xl bg-white p-4 border border-[#D9E0EC] flex items-center justify-between gap-3">
+          <div>
+            <span className="text-[11px] font-semibold text-[#727784] block">
+              Saldo Comprometido (A Pagar)
+            </span>
+            <span
+              className={`text-xl font-bold tabular-nums ${
+                payablesSummary.overdueBills.length > 0 ? 'text-[#DC2626]' : 'text-[#091b36]'
+              }`}
+            >
+              {formatBRL(payablesSummary.saldoComprometido)}
+            </span>
+            <span className="text-[11px] text-[#727784] block tabular-nums">
+              {payablesSummary.pendingBills.length} pendente(s) ·{' '}
+              {payablesSummary.overdueBills.length} vencida(s) ·{' '}
+              {payablesSummary.dueTodayBills.length} hoje
+            </span>
+          </div>
+          <CalendarClock className="w-8 h-8 text-[#D97706]/40 shrink-0" />
+        </div>
+      </div>
+
+      {/* Contas a Pagar + Ranking Serviços Mais Executados (v1.5 Cortex) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+        <section className="lg:col-span-7 rounded-2xl bg-white p-5 border border-[#D9E0EC] space-y-3.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <CalendarClock className="w-4 h-4 text-[#0056ab]" />
+                <h2 className="text-sm font-bold text-[#091b36]">
+                  Contas a Pagar ({payablesSummary.pendingBills.length} pendentes)
+                </h2>
+              </div>
+              <p className="text-[11px] text-[#727784]">
+                Boletos, fornecedores e despesas agendadas. Ao dar baixa, lança saída única no caixa (sem dupla contagem).
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowPayableModal(true)}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-[#0056ab] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#1b6fd1] cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Nova Conta a Pagar</span>
+            </button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {(['Pendentes', 'Vencidas', 'Pagas', 'Todas'] as const).map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setPayablesFilter(tab)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold cursor-pointer ${
+                  payablesFilter === tab
+                    ? 'bg-[#0056ab] text-white'
+                    : 'bg-[#F3F6FB] text-[#414752] hover:text-[#091b36]'
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+
+          <div className="divide-y divide-[#D9E0EC] max-h-80 overflow-y-auto pr-1">
+            {filteredPayables.map((bill) => {
+              const days = diasAteIso(bill.vencimento, todayIso);
+              const isOverdue = bill.status === 'Pendente' && days !== null && days < 0;
+              const isDueToday = bill.status === 'Pendente' && days === 0;
+              const isSettling = settlingBillId === bill.id;
+              const isConfirmingDel = confirmDeleteBillId === bill.id;
+              return (
+                <div key={bill.id} className="py-2.5 space-y-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <p className="text-xs font-bold text-[#091b36] truncate">{bill.descricao}</p>
+                        <span className="px-1.5 py-0.5 rounded bg-[#F3F6FB] border border-[#D9E0EC] text-[10px] font-semibold text-[#414752]">
+                          {bill.categoria}
+                        </span>
+                        {bill.purchaseId && (
+                          <span className="px-1.5 py-0.5 rounded bg-[#EAF2FD] text-[#0056ab] text-[10px] font-semibold">
+                            Compra vinculada (não duplicada no caixa)
+                          </span>
+                        )}
+                        {bill.status === 'Pago' ? (
+                          <span className="px-1.5 py-0.5 rounded bg-[#DCFCE7] text-[#16A34A] text-[10px] font-bold">
+                            Paga {bill.dataPagamento ? `em ${formatDateBR(bill.dataPagamento)}` : ''}
+                          </span>
+                        ) : isOverdue ? (
+                          <span className="px-1.5 py-0.5 rounded bg-[#FEE2E2] text-[#DC2626] text-[10px] font-bold">
+                            Vencida há {-days!}d
+                          </span>
+                        ) : isDueToday ? (
+                          <span className="px-1.5 py-0.5 rounded bg-[#FFF7E6] text-[#D97706] text-[10px] font-bold">
+                            Vence hoje
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded bg-[#F3F6FB] text-[#414752] text-[10px] font-medium">
+                            Venc. {formatDateBR(bill.vencimento)}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-[#727784] mt-0.5 truncate">
+                        {bill.fornecedor ? `Fornecedor: ${bill.fornecedor} · ` : ''}
+                        Vencimento: {formatDateBR(bill.vencimento)}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs font-bold text-[#091b36] tabular-nums">
+                        {formatBRL(bill.valor)}
+                      </span>
+                      {bill.status === 'Pendente' && !isSettling && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSettlingBillId(bill.id);
+                            setSettleChannel(
+                              bill.categoria === 'Peças'
+                                ? 'Fornecedores'
+                                : bill.categoria === 'Aluguel' || bill.categoria === 'Internet'
+                                ? 'Fixo'
+                                : 'PIX'
+                            );
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg bg-[#16A34A] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#15803d] cursor-pointer"
+                        >
+                          <Check className="w-3 h-3" />
+                          <span>Dar Baixa</span>
+                        </button>
+                      )}
+                      {isAdmin && !isConfirmingDel && (
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteBillId(bill.id)}
+                          title="Excluir conta a pagar"
+                          className="p-1 rounded-lg text-[#727784] hover:text-[#DC2626] hover:bg-[#FEE2E2]/50 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {isSettling && (
+                    <div className="rounded-xl border border-[#16A34A]/30 bg-[#DCFCE7]/40 p-2.5 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-[#091b36]">Canal do pagamento:</span>
+                        <select
+                          value={settleChannel}
+                          onChange={(e) => setSettleChannel(e.target.value as CashTransaction['channel'])}
+                          className="rounded-lg border border-[#D9E0EC] bg-white px-2 py-1 text-xs font-semibold text-[#091b36]"
+                        >
+                          <option value="PIX">PIX</option>
+                          <option value="Dinheiro">Dinheiro</option>
+                          <option value="Fornecedores">Fornecedores</option>
+                          <option value="Fixo">Fixo</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setSettlingBillId(null)}
+                          className="rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1 font-semibold text-[#414752] cursor-pointer"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleConfirmSettleBill(bill.id)}
+                          className="rounded-lg bg-[#16A34A] px-2.5 py-1 font-semibold text-white hover:bg-[#15803d] cursor-pointer"
+                        >
+                          Confirmar Pagamento
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {isConfirmingDel && (
+                    <div className="rounded-xl border border-[#DC2626]/30 bg-[#FEF2F2] p-2.5 flex items-center justify-between gap-2 text-[11px]">
+                      <span className="font-semibold text-[#991B1B]">
+                        Remover este agendamento de Contas a Pagar?
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteBillId(null)}
+                          className="rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1 font-semibold text-[#414752] cursor-pointer"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            deletePayableBill(bill.id);
+                            setConfirmDeleteBillId(null);
+                          }}
+                          className="rounded-lg bg-[#DC2626] px-2.5 py-1 font-semibold text-white hover:bg-[#B91C1C] cursor-pointer"
+                        >
+                          Excluir
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {filteredPayables.length === 0 && (
+              <div className="py-8 text-center text-xs text-[#727784]">
+                Nenhuma conta a pagar neste filtro.
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="lg:col-span-5 rounded-2xl bg-white p-5 border border-[#D9E0EC] space-y-3.5">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Award className="w-4 h-4 text-[#0056ab]" />
+              <div>
+                <h2 className="text-sm font-bold text-[#091b36]">Serviços Mais Executados</h2>
+                <p className="text-[11px] text-[#727784]">
+                  Ranking real por quantidade, faturamento e ticket médio (OS entregues)
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
+            {topServices.slice(0, 8).map((row, idx) => (
+              <div
+                key={row.key}
+                className="rounded-xl bg-[#F3F6FB] border border-[#D9E0EC] px-3 py-2.5 flex items-center justify-between gap-3"
+              >
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <span className="w-6 h-6 rounded-lg bg-[#EAF2FD] text-[#0056ab] text-[11px] font-bold flex items-center justify-center shrink-0 tabular-nums">
+                    {idx + 1}º
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-[#091b36] truncate">{row.name}</p>
+                    <p className="text-[10.5px] text-[#727784] tabular-nums">
+                      {row.count} {row.count === 1 ? 'OS entregue' : 'OS entregues'} · Ticket médio{' '}
+                      {formatBRL(row.avgTicket)}
+                    </p>
+                  </div>
+                </div>
+                <span className="text-xs font-bold text-[#16A34A] tabular-nums shrink-0">
+                  {formatBRL(row.totalRevenue)}
+                </span>
+              </div>
+            ))}
+            {topServices.length === 0 && (
+              <div className="py-8 text-center text-xs text-[#727784]">
+                Nenhuma OS entregue registrada ainda para compor o ranking.
+              </div>
+            )}
+          </div>
+        </section>
       </div>
 
       {/* Ledger + Breakdown */}
@@ -1323,6 +1669,111 @@ export const CashFlowDreView: React.FC = () => {
               })}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Modal Nova Conta a Pagar (`contasPagar` v1.5 Cortex) */}
+      {showPayableModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[#091b36]/55 backdrop-blur-xs p-4"
+          data-modal-open="true"
+          onClick={() => setShowPayableModal(false)}
+        >
+          <form
+            onSubmit={handleCreatePayableBill}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl border border-[#D9E0EC] space-y-3"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-[#091b36]">Agendar Conta a Pagar</h3>
+              <button
+                type="button"
+                onClick={() => setShowPayableModal(false)}
+                className="p-1.5 rounded-lg text-[#727784] hover:bg-[#F3F6FB] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-[#414752] mb-1">Descrição *</label>
+              <input
+                required
+                value={billDesc}
+                onChange={(e) => setBillDesc(e.target.value)}
+                placeholder="Ex: Boleto Fornecedor Tela / Aluguel / Energia..."
+                className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label className="block text-[11px] font-semibold text-[#414752] mb-1">Fornecedor</label>
+                <input
+                  value={billSupplier}
+                  onChange={(e) => setBillSupplier(e.target.value)}
+                  placeholder="Opcional"
+                  className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-[#414752] mb-1">Categoria</label>
+                <select
+                  value={billCategory}
+                  onChange={(e) => setBillCategory(e.target.value)}
+                  className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs"
+                >
+                  {(state.cfg.catDesp || ['Outros']).map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2.5">
+              <div>
+                <label className="block text-[11px] font-semibold text-[#414752] mb-1">Valor (R$) *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  value={billValue}
+                  onChange={(e) => setBillValue(e.target.value)}
+                  placeholder="0,00"
+                  className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs font-bold tabular-nums"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-[#414752] mb-1">Vencimento *</label>
+                <input
+                  type="date"
+                  required
+                  value={billDue}
+                  onChange={(e) => setBillDue(e.target.value)}
+                  className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowPayableModal(false)}
+                className="flex-1 rounded-xl border border-[#D9E0EC] py-2.5 text-xs font-semibold text-[#414752] cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="submit"
+                className="flex-1 rounded-xl bg-[#0056ab] py-2.5 text-xs font-semibold text-white cursor-pointer"
+              >
+                Agendar Conta
+              </button>
+            </div>
+          </form>
         </div>
       )}
     </div>

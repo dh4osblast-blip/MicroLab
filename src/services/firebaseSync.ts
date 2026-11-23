@@ -1,4 +1,12 @@
-import { LabState } from '../types/lab';
+import { LabState, ServiceOrder } from '../types/lab';
+import {
+  extractLegacyOrderMedia,
+  getMediaRecord,
+  listMediaRecordsForUid,
+  markMediaRecordDeleted,
+  MediaSlot,
+  putMediaRecord,
+} from './mediaStore';
 
 // Chaves isoladas por UID do usuário autenticado (evita contaminação cruzada entre contas)
 export const AUTH_CONFIG_STORAGE_KEY = 'microlab_firebase_auth_cfg_v1';
@@ -68,11 +76,22 @@ export function sanitizeLabStateForPersistence(state: LabState): LabState {
       (typeof rest.passcode === 'string' && rest.passcode.trim().length > 0) ||
         (Array.isArray(rest.patternNodes) && rest.patternNodes.length > 0)
     );
+    const hadInlineSig = Boolean(
+      (typeof rest.clientSignatureDataUrl === 'string' && rest.clientSignatureDataUrl.trim()) ||
+        (typeof rest.signatureDataUrl === 'string' && rest.signatureDataUrl.trim()) ||
+        rest.clientSignatureMediaId
+    );
     delete rest.passcode;
     delete rest.patternNodes;
     delete rest.unlockPattern;
+    delete rest.evidencePhotos;
+    delete rest.clientSignatureDataUrl;
+    delete rest.signatureDataUrl;
     if (hadVolatilePasscode && rest.hasPasscode === undefined) {
       rest.hasPasscode = true;
+    }
+    if (hadInlineSig && rest.hasClientSignature === undefined) {
+      rest.hasClientSignature = true;
     }
     return rest as unknown as LabState['orders'][number];
   });
@@ -204,6 +223,7 @@ const COLLECTIONS = [
   'shipments',
   'warranties',
   'transactions',
+  'contasPagar',
   'users',
   'tecnicos',
   'vendedores',
@@ -566,10 +586,23 @@ export async function runFirestoreSync(
     meta = { ...emptySyncMetadata(auth.uid) };
   }
 
-  const stamped = stampLabStateChanges(rawState, auth.uid, meta);
+  // Migra mídias legadas ainda embutidas em rawState antes de carimbar/sincronizar
+  const preExtracted = extractLegacyOrderMedia(auth.uid, rawState.orders || []);
+  for (const pw of preExtracted.pendingWrites) {
+    const existingMedia = await getMediaRecord(auth.uid, pw.id);
+    if (!existingMedia || existingMedia.updatedAt < pw.updatedAt || existingMedia.deleted) {
+      await putMediaRecord(auth.uid, pw);
+      meta.dirty[`media/${pw.id}`] = 1;
+    }
+  }
+  const inputState = preExtracted.migratedAny
+    ? { ...rawState, orders: preExtracted.orders }
+    : rawState;
+
+  const stamped = stampLabStateChanges(inputState, auth.uid, meta);
   let state = stamped.state;
   meta = stamped.meta;
-  let changed = false;
+  let changed = preExtracted.migratedAny;
   let warning = '';
 
   const baseDocsUrl = `https://firestore.googleapis.com/v1/projects/${auth.projectId}/databases/(default)/documents`;
@@ -610,24 +643,73 @@ export async function runFirestoreSync(
     const docs = (rows || []).filter((r) => r && r.document).map((r) => r.document!);
     if (rows?.[0]?.readTime) readTime = rows[0].readTime;
 
-    docs.forEach((doc) => {
+    for (const doc of docs) {
       const f = decodeDocFields(doc.fields);
-      if (!f) return;
+      if (!f) continue;
       seenKeys.add(`${f.l}/${f.id}`);
       if (f.s && (Date.parse(f.s) || 0) > (Date.parse(maxTimestamp) || 0)) {
         maxTimestamp = f.s;
       }
 
+      if (f.l === 'media') {
+        const key = `media/${f.id}`;
+        const localRec = await getMediaRecord(auth.uid, f.id);
+        const localTs = localRec ? Number(localRec.updatedAt) || 0 : -1;
+        if (f.u < localTs) {
+          meta.dirty[key] = 1;
+          continue;
+        }
+        if (
+          f.u === localTs &&
+          (f.d ? Boolean(localRec?.deleted) : Boolean(localRec && !localRec.deleted))
+        ) {
+          continue;
+        }
+        if (f.d) {
+          await markMediaRecordDeleted(
+            auth.uid,
+            f.id,
+            localRec?.orderId || 0,
+            localRec?.slot || 'front',
+            f.u
+          );
+          delete meta.hashes[key];
+        } else {
+          try {
+            const parsedMedia = JSON.parse(f.j) as {
+              id?: string;
+              orderId?: number;
+              slot?: MediaSlot;
+              dataUrl?: string;
+              mime?: string;
+            };
+            await putMediaRecord(auth.uid, {
+              id: f.id,
+              orderId: Number(parsedMedia.orderId) || 0,
+              slot: parsedMedia.slot || 'front',
+              dataUrl: String(parsedMedia.dataUrl || ''),
+              mime: String(parsedMedia.mime || ''),
+              updatedAt: f.u,
+            });
+            meta.hashes[key] = stableHash(f.j);
+          } catch {
+            continue;
+          }
+        }
+        delete meta.dirty[key];
+        continue;
+      }
+
       if (f.l === 'cnt') {
         const ck = f.id as (typeof COUNTER_KEYS)[number];
-        if (!COUNTER_KEYS.includes(ck)) return;
+        if (!COUNTER_KEYS.includes(ck)) continue;
         meta.cnt[ck] = f.u;
         const counters = state.counters || { nextOrderNumber: 0, nextSaleNumber: 0, nextPurchaseNumber: 0 };
         if (f.u > (counters[ck] || 0)) {
           state = { ...state, counters: { ...counters, [ck]: f.u } };
           changed = true;
         }
-        return;
+        continue;
       }
 
       if (f.l === 'cfg') {
@@ -637,10 +719,10 @@ export async function runFirestoreSync(
           const localTs = state.singletonTimestamps?.[sk] || 0;
           if (f.u < localTs) {
             meta.dirty[key] = 1;
-            return;
+            continue;
           }
           const curJson = JSON.stringify(state[sk]);
-          if (f.u === localTs && !f.d && curJson === f.j) return;
+          if (f.u === localTs && !f.d && curJson === f.j) continue;
           if (!f.d) {
             try {
               const parsedVal = JSON.parse(f.j);
@@ -656,12 +738,12 @@ export async function runFirestoreSync(
               // Skip malformed JSON
             }
           }
-          return;
+          continue;
         }
 
         // Dynamic v17 cfg.<k> key
         const k = f.id;
-        if (!k || k === '_ts' || k === 'updatedAt') return;
+        if (!k || k === '_ts' || k === 'updatedAt') continue;
         const cfgObj = { ...((state.cfg || {}) as unknown as Record<string, unknown>) };
         const cfgTs = { ...((cfgObj._ts as Record<string, number> | undefined) || {}) };
         const localTs = cfgTs[k] || 0;
@@ -671,16 +753,16 @@ export async function runFirestoreSync(
 
         if (f.u < localTs) {
           meta.dirty[key] = 1;
-          return;
+          continue;
         }
-        if (f.u === localTs && same) return;
+        if (f.u === localTs && same) continue;
 
         let parsedVal: unknown;
         if (!f.d) {
           try {
             parsedVal = JSON.parse(f.j);
           } catch {
-            return;
+            continue;
           }
         }
         if (f.d) delete cfgObj[k];
@@ -695,11 +777,11 @@ export async function runFirestoreSync(
         meta.hashes[key] = f.d ? '-' : stableHash(JSON.stringify(cfgObj[k]));
         delete meta.dirty[key];
         if (!same) changed = true;
-        return;
+        continue;
       }
 
       const col = f.l as CollectionKey;
-      if (!COLLECTIONS.includes(col) || !Array.isArray(state[col])) return;
+      if (!COLLECTIONS.includes(col) || !Array.isArray(state[col])) continue;
       const arr = [...(state[col] as unknown as Array<Record<string, unknown>>)];
       const colTomb = { ...(state.tombstones?.[col] || {}) };
       const key = `${col}/${f.id}`;
@@ -713,10 +795,10 @@ export async function runFirestoreSync(
 
       if (f.u < localTs) {
         meta.dirty[key] = 1;
-        return;
+        continue;
       }
       if (f.u === localTs && (f.d ? !localObj : localObj && serializeEntity(localObj) === f.j)) {
-        return;
+        continue;
       }
 
       if (f.d) {
@@ -728,7 +810,7 @@ export async function runFirestoreSync(
         delete meta.hashes[key];
       } else {
         try {
-          const parsedObj = JSON.parse(f.j) as Record<string, unknown>;
+          let parsedObj = JSON.parse(f.j) as Record<string, unknown>;
           // Ensure LGPD & auth safety on incoming cloud payloads too
           delete parsedObj.passcode;
           delete parsedObj.patternNodes;
@@ -738,23 +820,43 @@ export async function runFirestoreSync(
           delete parsedObj.senha;
           parsedObj.id = localObj ? localObj.id : parsedObj.id || f.id;
           parsedObj.updatedAt = f.u;
+
+          if (col === 'orders') {
+            const incomingExtracted = extractLegacyOrderMedia(auth.uid, [
+              parsedObj as unknown as ServiceOrder,
+            ]);
+            for (const pw of incomingExtracted.pendingWrites) {
+              const ex = await getMediaRecord(auth.uid, pw.id);
+              if (!ex || ex.updatedAt < pw.updatedAt) {
+                await putMediaRecord(auth.uid, pw);
+                meta.dirty[`media/${pw.id}`] = 1;
+              }
+            }
+            if (incomingExtracted.migratedAny && incomingExtracted.orders[0]) {
+              parsedObj = incomingExtracted.orders[0] as unknown as Record<string, unknown>;
+              meta.dirty[key] = 1;
+            }
+          }
+
           if (idx >= 0) arr[idx] = parsedObj;
           else arr.push(parsedObj);
           delete colTomb[f.id];
           meta.hashes[key] = stableHash(serializeEntity(parsedObj));
           changed = true;
         } catch {
-          return;
+          continue;
         }
       }
 
-      delete meta.dirty[key];
+      if (col !== 'orders' || !meta.dirty[key]) {
+        delete meta.dirty[key];
+      }
       state = {
         ...state,
         [col]: arr,
         tombstones: { ...(state.tombstones || {}), [col]: colTomb },
       };
-    });
+    }
 
     if (docs.length < PAGE || !maxTimestamp || (Date.parse(maxTimestamp) || 0) <= (Date.parse(cur) || 0)) {
       break;
@@ -777,6 +879,11 @@ export async function runFirestoreSync(
         const k = `${col}/${id}`;
         if (!seenKeys.has(k)) meta.dirty[k] = 1;
       });
+    });
+    const localMedia = await listMediaRecordsForUid(auth.uid);
+    localMedia.forEach((rec) => {
+      const k = `media/${rec.id}`;
+      if (!seenKeys.has(k)) meta.dirty[k] = 1;
     });
     SINGLETON_KEYS.forEach((sk) => {
       const k = `cfg/${sk}`;
@@ -802,10 +909,30 @@ export async function runFirestoreSync(
   }
 
   // 2) PUSH dirty records
-  const readRecord = (key: string): FirestoreFieldReg | null => {
+  const readRecord = async (key: string): Promise<FirestoreFieldReg | null> => {
     const slash = key.indexOf('/');
     const l = key.slice(0, slash);
     const id = key.slice(slash + 1);
+    if (l === 'media') {
+      const rec = await getMediaRecord(auth.uid, id);
+      if (!rec) return null;
+      if (rec.deleted || !rec.dataUrl) {
+        return { l, id, u: Number(rec.updatedAt) || Date.now(), d: true, j: '' };
+      }
+      return {
+        l,
+        id,
+        u: Number(rec.updatedAt) || Date.now(),
+        d: false,
+        j: JSON.stringify({
+          id: rec.id,
+          orderId: rec.orderId,
+          slot: rec.slot,
+          dataUrl: rec.dataUrl,
+          mime: rec.mime,
+        }),
+      };
+    }
     if (l === 'cnt') {
       const counters = state.counters || { nextOrderNumber: 0, nextSaleNumber: 0, nextPurchaseNumber: 0 };
       return { l, id, u: Number(counters[id as (typeof COUNTER_KEYS)[number]]) || 0, d: false, j: '' };
@@ -840,19 +967,19 @@ export async function runFirestoreSync(
   const MAX_JSON_BYTES = 900000;
   const BATCH = 100;
   const writes: Array<{ key: string; reg: FirestoreFieldReg }> = [];
-  Object.keys(meta.dirty).forEach((k) => {
-    const r = readRecord(k);
+  for (const k of Object.keys(meta.dirty)) {
+    const r = await readRecord(k);
     if (!r) {
       delete meta.dirty[k];
-      return;
+      continue;
     }
     if (r.j.length > MAX_JSON_BYTES) {
       warning = `Registro grande demais para a nuvem (ignorado): ${k}`;
       delete meta.dirty[k];
-      return;
+      continue;
     }
     writes.push({ key: k, reg: r });
-  });
+  }
 
   for (let i = 0; i < writes.length; i += BATCH) {
     const chunk = writes.slice(i, i + BATCH);
@@ -865,15 +992,15 @@ export async function runFirestoreSync(
         updateTransforms: [{ fieldPath: 's', setToServerValue: 'REQUEST_TIME' }],
       })),
     });
-    chunk.forEach(({ key, reg }) => {
-      const latest = readRecord(key);
+    for (const { key, reg } of chunk) {
+      const latest = await readRecord(key);
       if (!latest || latest.u === reg.u) {
         delete meta.dirty[key];
       }
       if (reg.l === 'cnt') {
         meta.cnt[reg.id] = reg.u;
       }
-    });
+    }
   }
 
   meta.lastSyncAt = Date.now();

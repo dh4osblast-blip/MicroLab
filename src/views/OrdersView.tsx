@@ -62,6 +62,7 @@ import { AndroidPatternLock, AndroidPatternMiniSvg } from '../components/Android
 import { PreDiagnosisPanel } from '../components/PreDiagnosisPanel';
 import { buildElectricalCardDetails } from '../utils/preDiagnosis';
 import { APOSTILA_DEFEITOS } from './DefectsAssistantView';
+import { getCachedMediaDataUrl, getMediaRecord, useOrderMedia } from '../services/mediaStore';
 
 interface OrdersViewProps {
   selectedOrderId: number | null;
@@ -109,6 +110,7 @@ interface OsFormState {
   clientAcceptanceChannel: 'WhatsApp' | 'E-mail' | 'Instagram' | 'Presencial';
   clientAcceptanceAt: string;
   clientSignatureDataUrl?: string;
+  clearClientSignature?: boolean;
   signalPaid: number;
   expectedDeliveryDate: string;
   pedForn: string;
@@ -152,6 +154,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
 }) => {
   const {
     state,
+    storageUid,
     currentUser,
     isAtendente,
     canAccessRoute,
@@ -283,6 +286,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       clientAcceptanceChannel: 'WhatsApp',
       clientAcceptanceAt: '',
       clientSignatureDataUrl: undefined,
+      clearClientSignature: false,
       signalPaid: 0,
       expectedDeliveryDate: '',
       pedForn: '',
@@ -313,10 +317,17 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       Object.assign(sai, o.exitChecklist);
     }
 
-    const existingSig = o.clientSignatureDataUrl || o.signatureDataUrl;
+    const existingSig =
+      (o.clientSignatureMediaId ? getCachedMediaDataUrl(storageUid, o.clientSignatureMediaId) : undefined) ||
+      o.clientSignatureDataUrl ||
+      o.signatureDataUrl;
     const initAcceptanceType: 'printed' | 'digital_channel' | 'screen_signature' =
       o.clientAcceptanceType ||
-      (existingSig ? 'screen_signature' : o.acceptedChannel === 'WhatsApp' ? 'digital_channel' : 'printed');
+      (existingSig || o.hasClientSignature || o.clientSignatureMediaId
+        ? 'screen_signature'
+        : o.acceptedChannel === 'WhatsApp'
+        ? 'digital_channel'
+        : 'printed');
     const initChannel: 'WhatsApp' | 'E-mail' | 'Instagram' | 'Presencial' =
       o.clientAcceptanceChannel ||
       (o.acceptedChannel === 'WhatsApp'
@@ -365,6 +376,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       clientAcceptanceChannel: initChannel,
       clientAcceptanceAt: initAt,
       clientSignatureDataUrl: existingSig,
+      clearClientSignature: false,
       signalPaid: Number(o.signalPaid) || 0,
       expectedDeliveryDate: o.expectedDeliveryDate || '',
       pedForn: o.pedForn || '',
@@ -379,6 +391,27 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     setPendingSavePayload(null);
     setFormOpen(true);
   };
+
+  useEffect(() => {
+    if (!formOpen || !form?.editingId) return;
+    if (form.clientSignatureDataUrl || form.clearClientSignature) return;
+    const targetOrder = state.orders.find((o) => o.id === form.editingId);
+    const sigMediaId = targetOrder?.clientSignatureMediaId;
+    if (!sigMediaId) return;
+    let cancelled = false;
+    getMediaRecord(storageUid, sigMediaId).then((rec) => {
+      if (cancelled || !rec || rec.deleted || !rec.dataUrl) return;
+      setForm((prev) => {
+        if (!prev || prev.editingId !== targetOrder.id || prev.clearClientSignature || prev.clientSignatureDataUrl) {
+          return prev;
+        }
+        return { ...prev, clientSignatureDataUrl: rec.dataUrl };
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [formOpen, form?.editingId, form?.clientSignatureDataUrl, form?.clearClientSignature, state.orders, storageUid]);
 
   // Consome osPrefillDraft vindo do Simulador ou Retorno de Garantia
   useEffect(() => {
@@ -451,6 +484,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   const activeOrder: ServiceOrder | undefined =
     state.orders.find((o) => o.id === selectedOrderId) || filtered[0];
 
+  const activeOrderMedia = useOrderMedia(storageUid, activeOrder);
   const activeVolatile = activeOrder ? getVolatileSecret(activeOrder.id) : undefined;
 
   useEffect(() => {
@@ -635,6 +669,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         clientAcceptanceAt: nextAcceptanceAt,
         clientSignatureDataUrl: nextClientSig,
         signatureDataUrl: nextClientSig,
+        clearClientSignature: form.clearClientSignature,
         signalPaid: form.signalPaid,
         expectedDeliveryDate: form.expectedDeliveryDate,
         pedForn: form.pedForn.trim(),
@@ -1302,16 +1337,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   )}
                 </div>
 
-                {/* Evidências Fotográficas & Modalidade de Aceite do Cliente */}
+                {/* Evidências Fotográficas & Modalidade de Aceite do Cliente (IndexedDB Fase 4) */}
                 {(() => {
                   const hasPhotos = Boolean(
-                    activeOrder.evidencePhotos &&
-                      Object.values(activeOrder.evidencePhotos).some(Boolean)
+                    Object.values(activeOrderMedia.photos).some(Boolean)
                   );
-                  const clientSig = activeOrder.clientSignatureDataUrl || activeOrder.signatureDataUrl;
+                  const clientSig = activeOrderMedia.clientSig;
                   const acceptanceType =
                     activeOrder.clientAcceptanceType ||
-                    (clientSig ? 'screen_signature' : 'printed');
+                    (clientSig || activeOrder.hasClientSignature ? 'screen_signature' : 'printed');
                   return (
                     <div className="rounded-xl bg-[#F3F6FB] p-3.5 border border-[#D9E0EC] space-y-2.5">
                       <div className="flex flex-wrap items-center justify-between gap-1.5 text-xs font-bold text-[#091b36]">
@@ -1321,7 +1355,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                             Aceite via {activeOrder.clientAcceptanceChannel || 'WhatsApp'}
                             {activeOrder.clientAcceptanceAt ? ` · ${activeOrder.clientAcceptanceAt}` : ''}
                           </span>
-                        ) : acceptanceType === 'screen_signature' && clientSig ? (
+                        ) : acceptanceType === 'screen_signature' && (clientSig || activeOrder.hasClientSignature) ? (
                           <span className="px-2 py-0.5 rounded bg-[#DCFCE7] text-[#16A34A] text-[10px] font-bold">
                             Assinatura digital na tela
                           </span>
@@ -1341,14 +1375,14 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                               ['dock', 'Conector & Lacre'],
                             ] as const
                           )
-                            .filter(([slot]) => Boolean(activeOrder.evidencePhotos?.[slot]))
+                            .filter(([slot]) => Boolean(activeOrderMedia.photos[slot]))
                             .map(([slot, label]) => (
                               <div
                                 key={slot}
                                 className="rounded-lg bg-white border border-[#D9E0EC] p-1.5 text-center space-y-1"
                               >
                                 <img
-                                  src={activeOrder.evidencePhotos?.[slot]}
+                                  src={activeOrderMedia.photos[slot]}
                                   alt={label}
                                   className="w-full h-16 object-cover rounded border border-[#D9E0EC]"
                                 />
@@ -2806,7 +2840,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                           const ctx = canvas?.getContext('2d');
                           if (canvas && ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
                           setHasDrawnModalSig(false);
-                          setForm((p) => (p ? { ...p, clientSignatureDataUrl: undefined } : p));
+                          setForm((p) =>
+                            p ? { ...p, clientSignatureDataUrl: undefined, clearClientSignature: true } : p
+                          );
                         }}
                         className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#727784] hover:text-[#DC2626] cursor-pointer"
                       >
@@ -2929,6 +2965,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                             const rect = canvas.getBoundingClientRect();
                             sigDrawingRef.current = true;
                             setHasDrawnModalSig(true);
+                            setForm((p) => (p ? { ...p, clearClientSignature: false } : p));
                             ctx.beginPath();
                             ctx.moveTo(
                               ((e.clientX - rect.left) / rect.width) * canvas.width,
@@ -3634,51 +3671,50 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             </table>
           </div>
 
-          {activeOrder.evidencePhotos &&
-            (['front', 'back', 'rails', 'dock'] as const).some((slot) =>
-              Boolean(activeOrder.evidencePhotos?.[slot])
-            ) && (
-              <div className="print-evidence-section block static w-full mb-2 overflow-hidden clear-both print-avoid-break">
-                <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
-                  Registro Fotográfico de Entrada (Evidências)
-                </h3>
-                <div className="print-evidence-grid grid grid-cols-4 gap-[6px] w-full static border-x border-b border-black p-1.5 overflow-hidden">
-                  {(
-                    [
-                      ['front', 'Frontal / Display'],
-                      ['back', 'Traseira & Câmeras'],
-                      ['rails', 'Laterais & Parafusos'],
-                      ['dock', 'Conector & Lacre'],
-                    ] as const
-                  ).map(([slot, label]) => {
-                    const photo = activeOrder.evidencePhotos?.[slot];
-                    return (
-                      <div
-                        key={slot}
-                        className="print-evidence-card static border border-gray-300 p-1 text-center overflow-hidden bg-white"
-                      >
-                        {photo ? (
-                          <div className="print-evidence-media static w-full h-[52px] overflow-hidden bg-white">
-                            <img
-                              src={photo}
-                              alt={label}
-                              className="static w-full h-[52px] max-h-[52px] object-cover block"
-                            />
-                          </div>
-                        ) : (
-                          <div className="print-evidence-media static w-full h-[52px] border border-dashed border-gray-400 bg-gray-50 flex items-center justify-center text-[7px] text-gray-500">
-                            Sem foto
-                          </div>
-                        )}
-                        <div className="text-[7.5px] font-semibold mt-0.5 text-gray-800 truncate">
-                          {label}
+          {(['front', 'back', 'rails', 'dock'] as const).some((slot) =>
+            Boolean(activeOrderMedia.photos[slot])
+          ) && (
+            <div className="print-evidence-section block static w-full mb-2 overflow-hidden clear-both print-avoid-break">
+              <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
+                Registro Fotográfico de Entrada (Evidências)
+              </h3>
+              <div className="print-evidence-grid grid grid-cols-4 gap-[6px] w-full static border-x border-b border-black p-1.5 overflow-hidden">
+                {(
+                  [
+                    ['front', 'Frontal / Display'],
+                    ['back', 'Traseira & Câmeras'],
+                    ['rails', 'Laterais & Parafusos'],
+                    ['dock', 'Conector & Lacre'],
+                  ] as const
+                ).map(([slot, label]) => {
+                  const photo = activeOrderMedia.photos[slot];
+                  return (
+                    <div
+                      key={slot}
+                      className="print-evidence-card static border border-gray-300 p-1 text-center overflow-hidden bg-white"
+                    >
+                      {photo ? (
+                        <div className="print-evidence-media static w-full h-[52px] overflow-hidden bg-white">
+                          <img
+                            src={photo}
+                            alt={label}
+                            className="static w-full h-[52px] max-h-[52px] object-cover block"
+                          />
                         </div>
+                      ) : (
+                        <div className="print-evidence-media static w-full h-[52px] border border-dashed border-gray-400 bg-gray-50 flex items-center justify-center text-[7px] text-gray-500">
+                          Sem foto
+                        </div>
+                      )}
+                      <div className="text-[7.5px] font-semibold mt-0.5 text-gray-800 truncate">
+                        {label}
                       </div>
-                    );
-                  })}
-                </div>
+                    </div>
+                  );
+                })}
               </div>
-            )}
+            </div>
+          )}
 
           <div className="block static w-full clear-both overflow-hidden mt-1.5 mb-1.5 print-avoid-break">
             <h3 className="text-[9.5px] font-bold uppercase bg-gray-100 border border-black px-2 py-0.5">
@@ -3789,10 +3825,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
           </div>
 
           {(() => {
-            const clientSig = activeOrder.clientSignatureDataUrl || activeOrder.signatureDataUrl;
+            const clientSig = activeOrderMedia.clientSig;
             const acceptanceType =
               activeOrder.clientAcceptanceType ||
-              (clientSig ? 'screen_signature' : 'printed');
+              (clientSig || activeOrder.hasClientSignature ? 'screen_signature' : 'printed');
             const showTechSig =
               state.cfg.autoPrintTechSignature !== false && Boolean(state.cfg.techSignatureDataUrl);
             return (

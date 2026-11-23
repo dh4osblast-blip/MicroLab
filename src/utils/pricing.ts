@@ -6,6 +6,7 @@ import {
   MicroComplexityLevel,
   PartItem,
   PartsMarginCurveConfig,
+  PayableBill,
   PurchaseRecord,
   RoundingConfig,
   SaleRecord,
@@ -15,7 +16,7 @@ import {
 
 // Official MicroLab Financial & Pricing Parameters
 
-export const APP_VERSION_TAG = 'v1.3 · Ampere';
+export const APP_VERSION_TAG = 'v1.5 · Cortex';
 export const OFFICIAL_WEEKLY_SCHEDULE = [4, 4, 4, 4, 4, 4, 2] as const; // Seg–Sáb 4h + Dom 2h = 26h/sem
 export const OFFICIAL_HOURS_BY_DOW = [2, 4, 4, 4, 4, 4, 4] as const; // Date.getDay() order: Dom..Sáb
 export const OFFICIAL_WEEKLY_HOURS = 26;
@@ -643,10 +644,15 @@ export function addDiasIso(iso: string, days: number): string {
   return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
 }
 
-export function diasAteIso(iso?: string): number | null {
+export function diasAteIso(iso?: string, refIso?: string): number | null {
   const clean = (iso || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) return null;
   const [y, m, d] = clean.split('-').map(Number);
+  const cleanRef = (refIso || '').slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(cleanRef)) {
+    const [ry, rm, rd] = cleanRef.split('-').map(Number);
+    return Math.round((Date.UTC(y, m - 1, d) - Date.UTC(ry, rm - 1, rd)) / 864e5);
+  }
   const t = new Date();
   return Math.round(
     (Date.UTC(y, m - 1, d) - Date.UTC(t.getFullYear(), t.getMonth(), t.getDate())) / 864e5
@@ -1574,6 +1580,147 @@ export function calcOrderApprovalRate(orders: ServiceOrder[]): number | null {
   return a + r > 0 ? a / (a + r) : null;
 }
 
+export function roundStockQty(n: number): number {
+  return Math.round((Number(n) || 0) * 1000) / 1000;
+}
 
+export function formatStockQty(n: number, unit?: string): string {
+  const rounded = roundStockQty(n);
+  const str = Number.isInteger(rounded)
+    ? String(rounded)
+    : rounded.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+  return unit && unit.trim() ? `${str} ${unit.trim()}` : str;
+}
 
+export function getPartExpiryStatus(
+  expiryDate?: string,
+  todayIso = todayIsoLocal()
+): {
+  status: 'none' | 'expired' | 'expiring30' | 'ok';
+  daysRemaining: number | null;
+  label: string;
+} {
+  const clean = (expiryDate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+    return { status: 'none', daysRemaining: null, label: '' };
+  }
+  const diff = diasAteIso(clean, todayIso);
+  if (diff === null) {
+    return { status: 'none', daysRemaining: null, label: '' };
+  }
+  if (diff < 0) {
+    return {
+      status: 'expired',
+      daysRemaining: diff,
+      label: `Vencido há ${-diff}d (${formatDateBR(clean)})`,
+    };
+  }
+  if (diff === 0) {
+    return {
+      status: 'expiring30',
+      daysRemaining: 0,
+      label: `Vence hoje (${formatDateBR(clean)})`,
+    };
+  }
+  if (diff <= 30) {
+    return {
+      status: 'expiring30',
+      daysRemaining: diff,
+      label: `Vence em ${diff}d (${formatDateBR(clean)})`,
+    };
+  }
+  return {
+    status: 'ok',
+    daysRemaining: diff,
+    label: `Val. ${formatDateBR(clean)}`,
+  };
+}
 
+/**
+ * Resume contas a pagar pendentes garantindo ZERO dupla contagem com compras já lançadas no caixa.
+ */
+export function calcPendingPayablesSummary(
+  contasPagar: PayableBill[],
+  transactions: CashTransaction[],
+  todayIso = todayIsoLocal()
+): {
+  saldoComprometido: number;
+  overdueBills: PayableBill[];
+  dueTodayBills: PayableBill[];
+  pendingBills: PayableBill[];
+} {
+  const paidPurchaseIds = new Set<string>();
+  const paidBillIds = new Set<string>();
+  (transactions || []).forEach((tx) => {
+    if (tx.type === 'out') {
+      if (tx.purchaseId && tx.kind === 'compra') paidPurchaseIds.add(tx.purchaseId);
+      if (tx.payableBillId) paidBillIds.add(tx.payableBillId);
+    }
+  });
+
+  const pendingBills = (contasPagar || [])
+    .filter((bill) => {
+      if (bill.status !== 'Pendente') return false;
+      if (bill.txId || paidBillIds.has(bill.id)) return false;
+      if (bill.purchaseId && paidPurchaseIds.has(bill.purchaseId)) return false;
+      return true;
+    })
+    .sort((a, b) => String(a.vencimento || '').localeCompare(String(b.vencimento || '')));
+
+  const saldoComprometido = round2(
+    pendingBills.reduce((s, b) => s + Math.max(0, Number(b.valor) || 0), 0)
+  );
+  const overdueBills = pendingBills.filter(
+    (b) => Boolean(b.vencimento) && b.vencimento < todayIso
+  );
+  const dueTodayBills = pendingBills.filter((b) => b.vencimento === todayIso);
+
+  return {
+    saldoComprometido,
+    overdueBills,
+    dueTodayBills,
+    pendingBills,
+  };
+}
+
+export interface TopExecutedServiceRow {
+  key: string;
+  name: string;
+  count: number;
+  totalRevenue: number;
+  avgTicket: number;
+}
+
+export function calcTopExecutedServices(
+  orders: ServiceOrder[],
+  servicos: ServiceCatalogItem[]
+): TopExecutedServiceRow[] {
+  const map = new Map<string, TopExecutedServiceRow>();
+  const svcNameById = new Map((servicos || []).map((s) => [s.id, s.nome]));
+
+  (orders || []).forEach((o) => {
+    if (o.status !== 'Entregue') return;
+    const rawName =
+      (o.serviceCatalogId && svcNameById.get(o.serviceCatalogId)) ||
+      (o.serviceCatalogName || '').trim() ||
+      (o.issue || '').trim() ||
+      'Serviço Técnico';
+    const key = o.serviceCatalogId || rawName.toLowerCase();
+    const revenue = calcOrderTotalAmount(o);
+    const cur = map.get(key) || {
+      key,
+      name: rawName,
+      count: 0,
+      totalRevenue: 0,
+      avgTicket: 0,
+    };
+    cur.count += 1;
+    cur.totalRevenue = round2(cur.totalRevenue + revenue);
+    cur.avgTicket = cur.count > 0 ? round2(cur.totalRevenue / cur.count) : 0;
+    map.set(key, cur);
+  });
+
+  return Array.from(map.values()).sort(
+    (a, b) => b.count - a.count || b.totalRevenue - a.totalRevenue
+  );
+}

@@ -324,6 +324,10 @@ export interface ServiceOrder {
   checkInNotes?: string;
   notes?: string;
   evidenceCount?: number;
+  evidenceMediaIds?: Partial<Record<'front' | 'back' | 'rails' | 'dock', string>>;
+  clientSignatureMediaId?: string;
+  hasClientSignature?: boolean;
+  /** Campos legados mantidos opcionais apenas para leitura/migração transparente para IndexedDB */
   evidencePhotos?: Partial<Record<'front' | 'back' | 'rails' | 'dock', string>>;
   signatureDataUrl?: string;
   clientAcceptanceType?: 'printed' | 'digital_channel' | 'screen_signature';
@@ -479,6 +483,9 @@ export interface PartItem {
   costPrice: number;
   sellPrice: number;
   reservedOs: number;
+  unit?: string;
+  expiryDate?: string;
+  fractionalConsumptionPerOs?: number;
   status: 'Disponível' | 'Alerta Reposição' | 'Esgotado' | 'Em Trânsito';
   updatedAt?: number;
 }
@@ -527,6 +534,20 @@ export interface WarrantyCase {
   updatedAt?: number;
 }
 
+export interface PayableBill {
+  id: string;
+  descricao: string;
+  categoria: string;
+  fornecedor?: string;
+  valor: number;
+  vencimento: string;
+  status: 'Pendente' | 'Pago';
+  dataPagamento?: string;
+  purchaseId?: string;
+  txId?: string;
+  updatedAt?: number;
+}
+
 export interface CashTransaction {
   id: string;
   title: string;
@@ -539,7 +560,9 @@ export interface CashTransaction {
   isoDate?: string;
   orderId?: number;
   refOrderId?: number;
-  kind?: 'sinal' | 'estSinal' | 'rec' | 'dev' | 'fixo' | 'venda' | 'compra' | 'gar';
+  purchaseId?: string;
+  payableBillId?: string;
+  kind?: 'sinal' | 'estSinal' | 'rec' | 'dev' | 'fixo' | 'venda' | 'compra' | 'gar' | 'pagar';
   reconciled: boolean;
   updatedAt?: number;
 }
@@ -554,6 +577,7 @@ export interface LabState {
   shipments: Shipment[];
   warranties: WarrantyCase[];
   transactions: CashTransaction[];
+  contasPagar: PayableBill[];
   // Coleções v17
   users: AppUser[];
   tecnicos: TechnicianPerson[];

@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { PackageCheck, Plus, Trash2, X } from 'lucide-react';
+import { Calendar, PackageCheck, Plus, Trash2, X } from 'lucide-react';
 import { PurchaseItem, PurchaseRecord } from '../types/lab';
 import { formatBRL, useLabStore } from '../store/useLabStore';
+import { addDiasIso, roundStockQty, todayIsoLocal } from '../utils/pricing';
 
 interface PurchaseOrderModalProps {
   isOpen: boolean;
@@ -25,6 +26,8 @@ export const PurchaseOrderModal: React.FC<PurchaseOrderModalProps> = ({
   const [customSupplierName, setCustomSupplierName] = useState('');
   const [frete, setFrete] = useState('0');
   const [items, setItems] = useState<PurchaseItem[]>([]);
+  const [schedulePayable, setSchedulePayable] = useState(false);
+  const [payableDueDate, setPayableDueDate] = useState(() => addDiasIso(todayIsoLocal(), 30));
   const [errorMsg, setErrorMsg] = useState('');
 
   useEffect(() => {
@@ -32,6 +35,8 @@ export const PurchaseOrderModal: React.FC<PurchaseOrderModalProps> = ({
     setSupplierKey(initialSupplierId || state.suppliers[0]?.id || '');
     setCustomSupplierName('');
     setFrete('0');
+    setSchedulePayable(false);
+    setPayableDueDate(addDiasIso(todayIsoLocal(), 30));
     setErrorMsg('');
     setItems(
       initialItems && initialItems.length > 0
@@ -81,6 +86,7 @@ export const PurchaseOrderModal: React.FC<PurchaseOrderModalProps> = ({
       forn,
       frete: freteNum,
       itens: validItems,
+      payableDueDate: schedulePayable && payableDueDate ? payableDueDate : undefined,
     });
     onCreated?.(created);
     onClose();
@@ -188,13 +194,15 @@ export const PurchaseOrderModal: React.FC<PurchaseOrderModalProps> = ({
                 />
                 <input
                   type="number"
-                  min="1"
-                  step="1"
+                  min="0.001"
+                  step="any"
                   value={it.q}
                   onChange={(e) =>
                     setItems((prev) =>
                       prev.map((row, i) =>
-                        i === idx ? { ...row, q: Math.max(1, parseInt(e.target.value, 10) || 1) } : row
+                        i === idx
+                          ? { ...row, q: roundStockQty(Math.max(0.001, parseFloat(e.target.value) || 0)) }
+                          : row
                       )
                     )
                   }
@@ -250,8 +258,40 @@ export const PurchaseOrderModal: React.FC<PurchaseOrderModalProps> = ({
           </div>
         </div>
 
+        <div className="rounded-xl bg-[#F3F6FB] border border-[#D9E0EC] p-3 space-y-2">
+          <label className="flex items-center gap-2 text-xs font-semibold text-[#091b36] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={schedulePayable}
+              onChange={(e) => setSchedulePayable(e.target.checked)}
+              className="rounded border-[#D9E0EC]"
+            />
+            <Calendar className="w-3.5 h-3.5 text-[#0056ab]" />
+            <span>Agendar em Contas a Pagar (compra a prazo / boleto / fatura)</span>
+          </label>
+          {schedulePayable && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-center pl-5">
+              <div>
+                <label className="block text-[10px] font-semibold text-[#414752] mb-0.5">
+                  Data de vencimento *
+                </label>
+                <input
+                  type="date"
+                  required={schedulePayable}
+                  value={payableDueDate}
+                  onChange={(e) => setPayableDueDate(e.target.value)}
+                  className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs text-[#091b36]"
+                />
+              </div>
+              <p className="text-[10.5px] text-[#414752]">
+                Ao receber o pedido, apenas o estoque será atualizado. A saída no caixa ocorrerá na baixa da conta a pagar (sem dupla contagem).
+              </p>
+            </div>
+          )}
+        </div>
+
         <p className="text-[11px] text-[#727784]">
-          O pedido é salvo com status <strong>A caminho</strong>. Ao confirmar <strong>Receber</strong>, o estoque é atualizado com custo médio ponderado (incluindo rateio do frete) e a saída é lançada na categoria Peças.
+          O pedido é salvo com status <strong>A caminho</strong>. Ao confirmar <strong>Receber</strong>, o estoque é atualizado com custo médio ponderado (incluindo rateio do frete){schedulePayable ? ' e o financeiro segue pelo vencimento agendado.' : ' e a saída é lançada na categoria Peças.'}
         </p>
 
         <div className="flex gap-2 pt-1">
