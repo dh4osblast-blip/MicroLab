@@ -80,8 +80,73 @@ export function getGeminiAvailability(): GeminiAvailability {
   };
 }
 
+function extractReadableMessage(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const anyErr = err as { message?: string; error?: { message?: string } };
+    if (anyErr.error?.message) return String(anyErr.error.message);
+    if (typeof anyErr.message === 'string') {
+      const trimmed = anyErr.message.trim();
+      if (trimmed.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(trimmed) as { error?: { message?: string }; message?: string };
+          if (parsed.error?.message) return String(parsed.error.message);
+          if (parsed.message) return String(parsed.message);
+        } catch {
+          // fallback below
+        }
+      }
+      return trimmed;
+    }
+  }
+  return String(err || '');
+}
+
+export function isGeminiUnavailable503(err: unknown): boolean {
+  if (err && typeof err === 'object') {
+    const anyErr = err as { status?: number; code?: number; error?: { code?: number; status?: string } };
+    if (anyErr.status === 503 || anyErr.code === 503 || anyErr.error?.code === 503) {
+      return true;
+    }
+    if (anyErr.error?.status === 'UNAVAILABLE') {
+      return true;
+    }
+  }
+  const lower = extractReadableMessage(err).toLowerCase();
+  return (
+    lower.includes('503') ||
+    lower.includes('unavailable') ||
+    lower.includes('overloaded') ||
+    lower.includes('high demand')
+  );
+}
+
+const RETRY_DELAYS_MS = [1500, 3000] as const;
+
+export async function callGeminiWithRetry<T>(fn: () => Promise<T>): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const canRetry =
+        attempt < RETRY_DELAYS_MS.length &&
+        isGeminiUnavailable503(err) &&
+        (typeof navigator === 'undefined' || navigator.onLine !== false);
+      if (!canRetry) {
+        throw err;
+      }
+      await new Promise<void>((resolve) => window.setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+    }
+  }
+  throw lastErr;
+}
+
 function formatGeminiError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err || '');
+  if (isGeminiUnavailable503(err)) {
+    return 'Servidores do Gemini temporariamente ocupados (503). Aguarde alguns segundos e tente novamente.';
+  }
+  const raw = extractReadableMessage(err);
   const lower = raw.toLowerCase();
   if (lower.includes('api_key_invalid') || lower.includes('api key not valid') || lower.includes('401')) {
     return 'Chave API Gemini inválida ou revogada. Verifique a chave cadastrada em Configurações.';
@@ -123,6 +188,7 @@ function scrubAccidentalIdentifiers(text: string): string {
 
 export async function testGeminiByokKey(apiKey: string): Promise<{
   ok: boolean;
+  overloaded?: boolean;
   message: string;
   latencyMs?: number;
 }> {
@@ -136,10 +202,12 @@ export async function testGeminiByokKey(apiKey: string): Promise<{
   const started = Date.now();
   try {
     const { ai } = await createGenAiSdkClient(cleanKey);
-    const response = await ai.models.generateContent({
-      model: GEMINI_MODEL_ID,
-      contents: 'Responda apenas com a palavra: OK',
-    });
+    const response = await callGeminiWithRetry(() =>
+      ai.models.generateContent({
+        model: GEMINI_MODEL_ID,
+        contents: 'Responda apenas com a palavra: OK',
+      })
+    );
     const text = (response.text || '').trim();
     const latencyMs = Date.now() - started;
     if (!text) {
@@ -151,6 +219,14 @@ export async function testGeminiByokKey(apiKey: string): Promise<{
       message: `Chave válida! Conexão confirmada com ${GEMINI_MODEL_ID} (${latencyMs} ms).`,
     };
   } catch (err) {
+    if (isGeminiUnavailable503(err)) {
+      return {
+        ok: false,
+        overloaded: true,
+        message:
+          'Sua chave autenticou no Google Gemini, mas os servidores estão com pico momentâneo de tráfego (503). Você pode salvar a chave normalmente e tentar novamente em alguns segundos.',
+      };
+    }
     return { ok: false, message: formatGeminiError(err) };
   }
 }
@@ -211,40 +287,42 @@ export async function extractDeviceAndImeiFromPhoto(file: File): Promise<LabelOc
   const { base64Data, mimeType } = await compressLabelImageInMemory(file, 1024);
 
   try {
-    const response = await ai.models.generateContent({
-      model: GEMINI_MODEL_ID,
-      contents: [
-        {
-          inlineData: {
-            data: base64Data,
-            mimeType,
+    const response = await callGeminiWithRetry(() =>
+      ai.models.generateContent({
+        model: GEMINI_MODEL_ID,
+        contents: [
+          {
+            inlineData: {
+              data: base64Data,
+              mimeType,
+            },
+          },
+          {
+            text: [
+              'Analise esta foto de etiqueta traseira, tela *#06#, caixa ou bandeja SIM de um aparelho eletrônico.',
+              'Extraia exclusivamente os dados técnicos do equipamento em JSON:',
+              '- marca: fabricante (ex: Samsung, Apple, Xiaomi, Motorola, Realme, LG, Asus). String vazia se não identificável.',
+              '- modeloComercial: nome comercial e/ou código do modelo (ex: Galaxy A14, iPhone 13, Redmi Note 12 (23021RAAEG)). String vazia se não identificável.',
+              '- imei: somente os 15 dígitos numéricos do IMEI principal (IMEI 1), sem espaços ou traços. Se houver apenas número de série ou não estiver legível, retorne string vazia.',
+              '- observacao: nota breve em PT-BR se encontrou 2 IMEIs ou se a etiqueta estava parcialmente borrada (máximo 1 frase).',
+            ].join('\n'),
+          },
+        ],
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              marca: { type: Type.STRING },
+              modeloComercial: { type: Type.STRING },
+              imei: { type: Type.STRING },
+              observacao: { type: Type.STRING },
+            },
+            required: ['marca', 'modeloComercial', 'imei'],
           },
         },
-        {
-          text: [
-            'Analise esta foto de etiqueta traseira, tela *#06#, caixa ou bandeja SIM de um aparelho eletrônico.',
-            'Extraia exclusivamente os dados técnicos do equipamento em JSON:',
-            '- marca: fabricante (ex: Samsung, Apple, Xiaomi, Motorola, Realme, LG, Asus). String vazia se não identificável.',
-            '- modeloComercial: nome comercial e/ou código do modelo (ex: Galaxy A14, iPhone 13, Redmi Note 12 (23021RAAEG)). String vazia se não identificável.',
-            '- imei: somente os 15 dígitos numéricos do IMEI principal (IMEI 1), sem espaços ou traços. Se houver apenas número de série ou não estiver legível, retorne string vazia.',
-            '- observacao: nota breve em PT-BR se encontrou 2 IMEIs ou se a etiqueta estava parcialmente borrada (máximo 1 frase).',
-          ].join('\n'),
-        },
-      ],
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            marca: { type: Type.STRING },
-            modeloComercial: { type: Type.STRING },
-            imei: { type: Type.STRING },
-            observacao: { type: Type.STRING },
-          },
-          required: ['marca', 'modeloComercial', 'imei'],
-        },
-      },
-    });
+      })
+    );
 
     const parsed = JSON.parse((response.text || '{}').trim()) as {
       marca?: string;
@@ -321,48 +399,50 @@ export async function analyzeBenchCopilot(
   };
 
   try {
-    const response = await ai.models.generateContent({
-      model: GEMINI_MODEL_ID,
-      contents: [
-        'Dados técnicos anonimizados da bancada (sem dados pessoais do cliente):',
-        JSON.stringify(sanitizedContext, null, 2),
-      ].join('\n'),
-      config: {
-        systemInstruction: [
-          'Você é um Copiloto Sênior de Bancada e Microssolda para assistência técnica de smartphones, tablets e notebooks (MicroLab).',
-          'Analise estritamente os dados técnicos fornecidos (modelo, defeito, checklist de entrada, testes da fonte ZK-SK150C e rotina da apostila) e devolva orientações práticas e seguras em Português do Brasil.',
-          'Regras de segurança obrigatórias: se houver bateria inchada ou oxidação, proíba choque de 5,2V e recomende isolamento de microfones antes da cuba ultrassônica; priorize medições não invasivas (condução reversa, consumo em fonte com limite seguro, inspeção de FPC/periféricos) antes de intervir na placa.',
-          'Seja objetivo, técnico e conciso.',
-        ].join(' '),
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            hipotesesPrincipais: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
+    const response = await callGeminiWithRetry(() =>
+      ai.models.generateContent({
+        model: GEMINI_MODEL_ID,
+        contents: [
+          'Dados técnicos anonimizados da bancada (sem dados pessoais do cliente):',
+          JSON.stringify(sanitizedContext, null, 2),
+        ].join('\n'),
+        config: {
+          systemInstruction: [
+            'Você é um Copiloto Sênior de Bancada e Microssolda para assistência técnica de smartphones, tablets e notebooks (MicroLab).',
+            'Analise estritamente os dados técnicos fornecidos (modelo, defeito, checklist de entrada, testes da fonte ZK-SK150C e rotina da apostila) e devolva orientações práticas e seguras em Português do Brasil.',
+            'Regras de segurança obrigatórias: se houver bateria inchada ou oxidação, proíba choque de 5,2V e recomende isolamento de microfones antes da cuba ultrassônica; priorize medições não invasivas (condução reversa, consumo em fonte com limite seguro, inspeção de FPC/periféricos) antes de intervir na placa.',
+            'Seja objetivo, técnico e conciso.',
+          ].join(' '),
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              hipotesesPrincipais: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+              pontosMedicao: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+              alertasSeguranca: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+              resumoTecnicoOs: {
+                type: Type.STRING,
+              },
             },
-            pontosMedicao: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-            },
-            alertasSeguranca: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING },
-            },
-            resumoTecnicoOs: {
-              type: Type.STRING,
-            },
+            required: [
+              'hipotesesPrincipais',
+              'pontosMedicao',
+              'alertasSeguranca',
+              'resumoTecnicoOs',
+            ],
           },
-          required: [
-            'hipotesesPrincipais',
-            'pontosMedicao',
-            'alertasSeguranca',
-            'resumoTecnicoOs',
-          ],
         },
-      },
-    });
+      })
+    );
 
     const parsed = JSON.parse((response.text || '{}').trim()) as Partial<BenchCopilotResult>;
     return {
@@ -427,25 +507,27 @@ export async function translateQuoteForCustomer(
   };
 
   try {
-    const response = await ai.models.generateContent({
-      model: GEMINI_MODEL_ID,
-      contents: [
-        'Transforme os dados técnicos abaixo no corpo de uma mensagem cordial e clara para WhatsApp (sem saudação inicial com nome do cliente, pois o sistema adicionará o nome localmente):',
-        JSON.stringify(payload, null, 2),
-      ].join('\n'),
-      config: {
-        systemInstruction: [
-          'Você é o atendente técnico cordial da MicroLab Assistência Técnica.',
-          'Sua tarefa é traduzir termos técnicos de bancada (ex.: reballing PMIC, oxidação na malha VBUS, troca de FPC, condução reversa, curto em linha primária, troca de módulo) para uma explicação simples, transparente e fácil de entender por qualquer cliente leigo no WhatsApp.',
-          'Regras obrigatórias:',
-          '1. NÃO inclua saudação com nome de pessoa (o sistema vai prefixar localmente). Comece direto informando sobre a OS e o aparelho.',
-          '2. Explique de forma acessível o que foi identificado e o que será feito no reparo.',
-          '3. Informe claramente os valores (Total em R$, eventual desconto/entrega/sinal pago e saldo restante). Use formatação amigável de WhatsApp (*negrito* moderado).',
-          '4. Informe o prazo de garantia previsto (ex.: 90 dias para o serviço executado).',
-          '5. Convide o cliente a responder confirmando a aprovação ou tirando dúvidas. Texto pronto para envio, sem comentários extras.',
-        ].join(' '),
-      },
-    });
+    const response = await callGeminiWithRetry(() =>
+      ai.models.generateContent({
+        model: GEMINI_MODEL_ID,
+        contents: [
+          'Transforme os dados técnicos abaixo no corpo de uma mensagem cordial e clara para WhatsApp (sem saudação inicial com nome do cliente, pois o sistema adicionará o nome localmente):',
+          JSON.stringify(payload, null, 2),
+        ].join('\n'),
+        config: {
+          systemInstruction: [
+            'Você é o atendente técnico cordial da MicroLab Assistência Técnica.',
+            'Sua tarefa é traduzir termos técnicos de bancada (ex.: reballing PMIC, oxidação na malha VBUS, troca de FPC, condução reversa, curto em linha primária, troca de módulo) para uma explicação simples, transparente e fácil de entender por qualquer cliente leigo no WhatsApp.',
+            'Regras obrigatórias:',
+            '1. NÃO inclua saudação com nome de pessoa (o sistema vai prefixar localmente). Comece direto informando sobre a OS e o aparelho.',
+            '2. Explique de forma acessível o que foi identificado e o que será feito no reparo.',
+            '3. Informe claramente os valores (Total em R$, eventual desconto/entrega/sinal pago e saldo restante). Use formatação amigável de WhatsApp (*negrito* moderado).',
+            '4. Informe o prazo de garantia previsto (ex.: 90 dias para o serviço executado).',
+            '5. Convide o cliente a responder confirmando a aprovação ou tirando dúvidas. Texto pronto para envio, sem comentários extras.',
+          ].join(' '),
+        },
+      })
+    );
 
     const text = (response.text || '').trim();
     if (!text) {

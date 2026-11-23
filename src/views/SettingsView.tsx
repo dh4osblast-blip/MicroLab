@@ -344,11 +344,13 @@ export const SettingsView: React.FC = () => {
   const [geminiHasSavedKey, setGeminiHasSavedKey] = useState(() => Boolean(getGeminiByokKey()));
   const [geminiTesting, setGeminiTesting] = useState(false);
   const [geminiFeedback, setGeminiFeedback] = useState('');
+  const [geminiWarning, setGeminiWarning] = useState('');
   const [geminiError, setGeminiError] = useState('');
 
   const handleSaveGeminiKey = (e: React.FormEvent) => {
     e.preventDefault();
     setGeminiFeedback('');
+    setGeminiWarning('');
     setGeminiError('');
     const trimmed = geminiKeyInput.trim();
     if (!trimmed) {
@@ -363,6 +365,7 @@ export const SettingsView: React.FC = () => {
 
   const handleTestGeminiKey = async () => {
     setGeminiFeedback('');
+    setGeminiWarning('');
     setGeminiError('');
     const candidate = geminiKeyInput.trim() || getGeminiByokKey();
     if (!candidate) {
@@ -377,6 +380,8 @@ export const SettingsView: React.FC = () => {
       setGeminiKeyInput(candidate);
       setGeminiHasSavedKey(true);
       setGeminiFeedback(`${res.message} Chave salva localmente neste navegador.`);
+    } else if (res.overloaded) {
+      setGeminiWarning(res.message);
     } else {
       setGeminiError(res.message);
     }
@@ -386,6 +391,7 @@ export const SettingsView: React.FC = () => {
     removeGeminiByokKey();
     setGeminiKeyInput('');
     setGeminiHasSavedKey(false);
+    setGeminiWarning('');
     setGeminiError('');
     setGeminiFeedback('Chave Gemini (BYOK) removida deste dispositivo.');
   };
@@ -2556,6 +2562,13 @@ export const SettingsView: React.FC = () => {
             <div className="rounded-xl bg-[#FEE2E2] border border-[#DC2626]/30 px-3.5 py-2.5 text-xs text-[#DC2626] flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{geminiError}</span>
+            </div>
+          )}
+
+          {geminiWarning && (
+            <div className="rounded-xl bg-[#FFF7E6] border border-[#D97706]/35 px-3.5 py-2.5 text-xs text-[#92400E] flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-[#D97706] shrink-0 mt-0.5" />
+              <span>{geminiWarning}</span>
             </div>
           )}
 
