@@ -950,6 +950,38 @@ export const BenchPowerView: React.FC = () => {
     }
   };
 
+  const buildWhatsappReportText = (sum: ZkSessionSummary, notesOverride?: string) => {
+    const devModel = reportModel.trim() || selectedReportOrder?.device || 'não informado';
+    const d = iscale === 1000 ? 3 : 2;
+    const nf = (x: number | null, dec: number) => (x === null ? '--' : fmtComma(x, dec));
+    const notesStr = (notesOverride !== undefined ? notesOverride : reportNotes).trim();
+    return [
+      '*MicroLab · Assistência técnica*',
+      'Teste na fonte de bancada',
+      `Aparelho: ${devModel}${selectedReportOrder ? ` (OS nº ${selectedReportOrder.id})` : ''}`,
+      `Data: ${fmtDateBR(sum.ini)}`,
+      '',
+      'O que observamos:',
+      ...(sum.evid.length > 0
+        ? sum.evid.map((e) => `• ${e.cliText || e.text}`)
+        : [
+            '• O teste não apontou os indícios que monitoramos (consumo em espera, curto/sobrecarga e consumo alto sustentado).',
+          ]),
+      ...(sum.prots.length > 0
+        ? [`• A fonte acionou proteção durante o teste: ${sum.prots.map((x) => x.nm).join(', ')}.`]
+        : []),
+      '',
+      `Medições: corrente mínima ${nf(sum.imin, d)} A, média ${nf(sum.iavg, d)} A e pico ${nf(
+        sum.ipk,
+        d
+      )} A; potência máxima ${nf(sum.pmax, 1)} W; tempo com a saída ligada ${fmtDur(sum.ms)}.`,
+      ...(notesStr ? ['', `Observação do técnico: ${notesStr}`] : []),
+      '',
+      'Orçamento antes do serviço.',
+      'WhatsApp (71) 99129-3552',
+    ].join('\n');
+  };
+
   // Session Report (relat + testeOS + docPrint + wppTxt)
   const buildTestEntry = (sum: ZkSessionSummary, notesText: string): PowerSupplyTestEntry => {
     const dg: string[] = [];
@@ -962,6 +994,20 @@ export const BenchPowerView: React.FC = () => {
     if (sum.evid.some((e) => e.kind === 'alto')) {
       dg.push('consumo alto sustentado');
     }
+    const evidencias = sum.evid
+      .filter(
+        (e): e is typeof e & { kind: 'fuga' | 'pulso' | 'curto' | 'alto' | 'prot' } =>
+          e.kind === 'fuga' ||
+          e.kind === 'pulso' ||
+          e.kind === 'curto' ||
+          e.kind === 'alto' ||
+          e.kind === 'prot'
+      )
+      .map((e) => ({
+        kind: e.kind,
+        text: e.text,
+        ...(e.cliText ? { cliText: e.cliText } : {}),
+      }));
     return {
       sid: sum.ini,
       dt: fmtStamp(sum.ini),
@@ -969,6 +1015,14 @@ export const BenchPowerView: React.FC = () => {
       fugaMa: sum.fugaA !== null ? Math.round(sum.fugaA * 1000) : null,
       bootA: sum.bootPk !== null ? Math.round(sum.bootPk * 1000) / 1000 : null,
       ipkA: sum.ipk !== null ? Math.round(sum.ipk * 1000) / 1000 : null,
+      vavgV: sum.vavg !== null ? Math.round(sum.vavg * 100) / 100 : null,
+      iminA: sum.imin !== null ? Math.round(sum.imin * 1000) / 1000 : null,
+      iavgA: sum.iavg !== null ? Math.round(sum.iavg * 1000) / 1000 : null,
+      pmaxW: sum.pmax !== null ? Math.round(sum.pmax * 100) / 100 : null,
+      via: sum.via,
+      prots: sum.prots.map((p) => p.nm),
+      evidencias,
+      cliResumo: buildWhatsappReportText(sum, notesText),
       diag: dg.length > 0 ? dg.join('; ') : 'nenhum indício detectado',
       nt: notesText.trim(),
     };
@@ -987,7 +1041,9 @@ export const BenchPowerView: React.FC = () => {
         note: `[ZK-SK150C · ${entry.dur}] ${entry.diag}${notesText.trim() ? ` · ${notesText.trim()}` : ''}`,
         recordedAt: fmtStamp(sum.fim),
       });
-      setReportStatusMsg(target ? `Resumo do teste salvo na OS nº ${target.id} (${target.code}).` : '');
+      setReportStatusMsg(
+        target ? `Cartão de Diagnóstico Elétrico salvo na OS nº ${target.id} (${target.code}).` : ''
+      );
     } else {
       setReportStatusMsg('Vínculo removido: o resumo saiu da OS.');
     }
@@ -1015,37 +1071,6 @@ export const BenchPowerView: React.FC = () => {
     () => (reportOrderId ? state.orders.find((o) => o.id === Number(reportOrderId)) || null : null),
     [reportOrderId, state.orders]
   );
-
-  const buildWhatsappReportText = (sum: ZkSessionSummary) => {
-    const devModel = reportModel.trim() || selectedReportOrder?.device || 'não informado';
-    const d = iscale === 1000 ? 3 : 2;
-    const nf = (x: number | null, dec: number) => (x === null ? '--' : fmtComma(x, dec));
-    return [
-      '*MicroLab · Assistência técnica*',
-      'Teste na fonte de bancada',
-      `Aparelho: ${devModel}${selectedReportOrder ? ` (OS nº ${selectedReportOrder.id})` : ''}`,
-      `Data: ${fmtDateBR(sum.ini)}`,
-      '',
-      'O que observamos:',
-      ...(sum.evid.length > 0
-        ? sum.evid.map((e) => `• ${e.cliText || e.text}`)
-        : [
-            '• O teste não apontou os indícios que monitoramos (consumo em espera, curto/sobrecarga e consumo alto sustentado).',
-          ]),
-      ...(sum.prots.length > 0
-        ? [`• A fonte acionou proteção durante o teste: ${sum.prots.map((x) => x.nm).join(', ')}.`]
-        : []),
-      '',
-      `Medições: corrente mínima ${nf(sum.imin, d)} A, média ${nf(sum.iavg, d)} A e pico ${nf(
-        sum.ipk,
-        d
-      )} A; potência máxima ${nf(sum.pmax, 1)} W; tempo com a saída ligada ${fmtDur(sum.ms)}.`,
-      ...(reportNotes.trim() ? ['', `Observação do técnico: ${reportNotes.trim()}`] : []),
-      '',
-      'Orçamento antes do serviço.',
-      'WhatsApp (71) 99129-3552',
-    ].join('\n');
-  };
 
   const handleCopyReportWhatsapp = async () => {
     if (!reportSnapshot) return;

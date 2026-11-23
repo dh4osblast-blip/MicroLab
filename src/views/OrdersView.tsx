@@ -2,10 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Banknote,
+  Check,
   CheckCircle2,
   ClipboardList,
+  Copy,
+  Cpu,
   Edit3,
   Eraser,
+  Eye,
+  EyeOff,
   Lock,
   MessageCircle,
   PackageCheck,
@@ -31,6 +36,7 @@ import {
 import { formatBRL, useLabStore } from '../store/useLabStore';
 import {
   ACCESSORIES_PRESETS,
+  APP_VERSION_TAG,
   CANONICAL_ORDER_STATUSES,
   ENTRY_CHECKLIST_ITEMS,
   EXIT_CHECKLIST_ITEMS,
@@ -52,6 +58,10 @@ import {
   resolveOrderWarrantyUntil,
   todayIsoLocal,
 } from '../utils/pricing';
+import { AndroidPatternLock, AndroidPatternMiniSvg } from '../components/AndroidPatternLock';
+import { PreDiagnosisPanel } from '../components/PreDiagnosisPanel';
+import { buildElectricalCardDetails } from '../utils/preDiagnosis';
+import { APOSTILA_DEFEITOS } from './DefectsAssistantView';
 
 interface OrdersViewProps {
   selectedOrderId: number | null;
@@ -72,6 +82,7 @@ interface OsFormState {
   model: string;
   imei: string;
   passcode: string;
+  patternNodes: number[];
   accessories: string[];
   customAccessories: string;
   issue: string;
@@ -157,6 +168,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   } = useLabStore();
 
   const [confirmDeleteReportId, setConfirmDeleteReportId] = useState<string | null>(null);
+  const [showEngineeringModal, setShowEngineeringModal] = useState(false);
+  const [engineeringTipIdx, setEngineeringTipIdx] = useState(0);
+  const [showVolatileSecret, setShowVolatileSecret] = useState(false);
+  const [copiedPowerCardSid, setCopiedPowerCardSid] = useState<number | null>(null);
 
   const [viewTab, setViewTab] = useState<ViewTab>('Todas');
   const [search, setSearch] = useState('');
@@ -241,6 +256,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       model: prefill?.model || '',
       imei: prefill?.imei || '',
       passcode: '',
+      patternNodes: [],
       accessories: prefill?.accessories || [],
       customAccessories: '',
       issue: prefill?.issue || '',
@@ -322,6 +338,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       model: modelStr || o.device,
       imei: o.imei === 'Não informado' ? '' : o.imei || '',
       passcode: getVolatileSecret(o.id)?.passcode || '',
+      patternNodes: getVolatileSecret(o.id)?.patternNodes || [],
       accessories: ac.filter((x) => presetSet.has(x)),
       customAccessories: customAc,
       issue: o.issue || '',
@@ -435,6 +452,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     state.orders.find((o) => o.id === selectedOrderId) || filtered[0];
 
   const activeVolatile = activeOrder ? getVolatileSecret(activeOrder.id) : undefined;
+
+  useEffect(() => {
+    setShowVolatileSecret(false);
+  }, [activeOrder?.id]);
 
   const statusColor = (status: OrderStatus) => {
     switch (status) {
@@ -581,7 +602,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
           ? 'watch'
           : 'smartphone',
         imei: form.imei.trim() || 'Não informado',
-        hasPasscode: Boolean(form.passcode.trim()),
+        hasPasscode: Boolean(form.passcode.trim() || form.patternNodes.length > 0),
         accessories: allAccessories,
         issue: form.issue.trim() || 'Análise de bancada solicitada',
         notes: form.notes.trim(),
@@ -622,7 +643,13 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         pedChegou: form.pedChegou,
         returnWarrantyFromId: form.returnWarrantyFromId,
       },
-      volatileSecret: form.passcode.trim() ? { passcode: form.passcode.trim() } : undefined,
+      volatileSecret:
+        form.passcode.trim() || form.patternNodes.length > 0
+          ? {
+              passcode: form.passcode.trim() || undefined,
+              patternNodes: form.patternNodes.length > 0 ? [...form.patternNodes] : undefined,
+            }
+          : undefined,
     });
 
     onSelectOrder(saved.id);
@@ -906,7 +933,17 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
               <input
                 type="text"
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const trimmed = val.trim();
+                  if (trimmed === '*#0*#' || trimmed === '*#150#') {
+                    setSearch('');
+                    setEngineeringTipIdx(Math.floor(Math.random() * APOSTILA_DEFEITOS.length));
+                    setShowEngineeringModal(true);
+                    return;
+                  }
+                  setSearch(val);
+                }}
                 placeholder="Buscar por #OS, cliente, modelo ou IMEI..."
                 className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] pl-9 pr-3 py-2 text-xs text-[#091b36] focus:outline-none focus:border-[#0056ab]"
               />
@@ -1149,22 +1186,63 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   </div>
                 )}
 
-                {/* Volatile Session Secret Notice */}
-                {activeVolatile && (
-                  <div className="rounded-xl bg-[#FFF7E6] border border-[#D97706]/30 p-3 text-xs flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 text-[#091b36]">
-                      <Lock className="w-4 h-4 text-[#D97706] shrink-0" />
-                      <span>
-                        Sessão RAM:{' '}
+                {/* Volatile Session Secret Notice (LGPD: hidden by default, reveal on demand) */}
+                {activeVolatile && (activeVolatile.passcode || activeVolatile.patternNodes?.length) && (
+                  <div className="rounded-xl bg-[#FFF7E6] border border-[#D97706]/30 p-3 text-xs space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-[#091b36]">
+                        <Lock className="w-4 h-4 text-[#D97706] shrink-0" />
+                        <span className="font-semibold">
+                          Credencial em RAM (LGPD) ·{' '}
+                          <span className="text-[#D97706] font-normal">Não persistida</span>
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowVolatileSecret((v) => !v)}
+                        className="inline-flex items-center gap-1 rounded-lg bg-white border border-[#D97706]/40 px-2.5 py-1 text-[11px] font-bold text-[#091b36] hover:bg-[#FFFBEB] cursor-pointer"
+                      >
+                        {showVolatileSecret ? (
+                          <>
+                            <EyeOff className="w-3.5 h-3.5" />
+                            <span>Ocultar</span>
+                          </>
+                        ) : (
+                          <>
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>Revelar</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {showVolatileSecret ? (
+                      <div className="flex flex-wrap items-center gap-3 pt-1 border-t border-[#D97706]/20">
                         {activeVolatile.passcode && (
-                          <strong className="font-mono mr-2">PIN {activeVolatile.passcode}</strong>
+                          <div className="text-xs text-[#091b36]">
+                            <span className="text-[10px] uppercase text-[#727784] block">PIN / Senha</span>
+                            <strong className="font-mono">{activeVolatile.passcode}</strong>
+                          </div>
                         )}
                         {activeVolatile.patternNodes?.length ? (
-                          <strong className="font-mono">Padrão {activeVolatile.patternNodes.join('→')}</strong>
+                          <div className="flex items-center gap-2.5">
+                            <AndroidPatternMiniSvg nodes={activeVolatile.patternNodes} size={52} />
+                            <div>
+                              <span className="text-[10px] uppercase text-[#727784] block">
+                                Padrão 3×3
+                              </span>
+                              <strong className="font-mono text-[#091b36]">
+                                {activeVolatile.patternNodes.join('→')}
+                              </strong>
+                            </div>
+                          </div>
                         ) : null}
-                      </span>
-                    </div>
-                    <span className="text-[10px] font-semibold text-[#D97706]">Não persistida</span>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-[#727784]">
+                        Oculta por privacidade na bancada. Clique em Revelar para visualizar PIN/padrão desta sessão.
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -1324,48 +1402,134 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   </div>
                 )}
 
-                {/* Testes na Fonte de Bancada (testesFonte v17) */}
+                {/* Cartão de Diagnóstico Elétrico ZK-SK150C (v1.4 Buck) */}
                 {Array.isArray(activeOrder.testesFonte) && activeOrder.testesFonte.length > 0 && (
-                  <div className="rounded-xl bg-[#0B0F17] text-white p-3.5 border border-[#2A3954] space-y-2">
+                  <div className="rounded-xl bg-[#0B0F17] text-white p-3.5 border border-[#2A3954] space-y-2.5">
                     <div className="flex items-center justify-between text-[11px] text-[#06B6D4] font-semibold">
-                      <span className="inline-flex items-center gap-1">
-                        <Zap className="w-3.5 h-3.5" /> Testes na Fonte de Bancada ({activeOrder.testesFonte.length})
+                      <span className="inline-flex items-center gap-1.5">
+                        <Zap className="w-3.5 h-3.5" />
+                        <span>Cartão de Diagnóstico Elétrico · ZK-SK150C ({activeOrder.testesFonte.length})</span>
                       </span>
                     </div>
-                    <div className="space-y-2">
-                      {activeOrder.testesFonte.map((t) => (
-                        <div
-                          key={t.sid}
-                          className="rounded-lg bg-[#131B2E] border border-[#2A3954] p-2.5 text-[11px] space-y-1"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-1 text-slate-300">
-                            <span className="font-mono font-bold text-[#06B6D4]">{t.dt}</span>
-                            <span className="font-mono text-[10px] text-slate-400">
-                              Duração: {t.dur}
-                            </span>
+                    <div className="space-y-2.5">
+                      {activeOrder.testesFonte.map((t) => {
+                        const card = buildElectricalCardDetails(t, activeOrder);
+                        const phoneDigits = (activeOrder.clientPhone || '').replace(/\D/g, '');
+                        const waNum =
+                          phoneDigits.length >= 10
+                            ? phoneDigits.startsWith('55')
+                              ? phoneDigits
+                              : `55${phoneDigits}`
+                            : '';
+                        const waUrl = waNum
+                          ? `https://wa.me/${waNum}?text=${encodeURIComponent(card.whatsappText)}`
+                          : '';
+                        return (
+                          <div
+                            key={t.sid}
+                            className="rounded-lg bg-[#131B2E] border border-[#2A3954] p-3 text-[11px] space-y-2"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-1 text-slate-300">
+                              <span className="font-mono font-bold text-[#06B6D4]">{t.dt}</span>
+                              <span className="font-mono text-[10px] text-slate-400">
+                                {t.via ? `${t.via} · ` : ''}Duração: {t.dur}
+                              </span>
+                            </div>
+
+                            <div className="flex flex-wrap gap-1.5">
+                              {card.badges.map((b, idx) => (
+                                <span
+                                  key={idx}
+                                  className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                    b.tone === 'danger'
+                                      ? 'bg-[#DC2626]/20 text-[#FCA5A5] border border-[#DC2626]/40'
+                                      : b.tone === 'warn'
+                                      ? 'bg-[#F59E0B]/20 text-[#FCD34D] border border-[#F59E0B]/40'
+                                      : b.tone === 'info'
+                                      ? 'bg-[#06B6D4]/20 text-[#67E8F9] border border-[#06B6D4]/40'
+                                      : 'bg-[#10B981]/20 text-[#6EE7B7] border border-[#10B981]/40'
+                                  }`}
+                                >
+                                  {b.label}
+                                </span>
+                              ))}
+                            </div>
+
+                            <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5 font-mono text-[10px] tabular-nums text-slate-200 bg-[#0B0F17]/70 rounded-lg p-2 border border-[#2A3954]/80">
+                              <div>
+                                <span className="text-slate-400 block">Fuga</span>
+                                <strong>{t.fugaMa != null ? `${t.fugaMa} mA` : '—'}</strong>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block">Boot</span>
+                                <strong>{t.bootA != null ? `${t.bootA} A` : '—'}</strong>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block">Pico</span>
+                                <strong>{t.ipkA != null ? `${t.ipkA} A` : '—'}</strong>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block">Média</span>
+                                <strong>{t.iavgA != null ? `${t.iavgA} A` : '—'}</strong>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block">Pot. Máx</span>
+                                <strong>{t.pmaxW != null ? `${t.pmaxW} W` : '—'}</strong>
+                              </div>
+                            </div>
+
+                            <div className="rounded-lg bg-[#0B0F17]/60 border border-[#2A3954] p-2 space-y-1">
+                              <span className="block text-[10px] font-bold text-[#67E8F9]">
+                                Resumo em linguagem simples para o cliente:
+                              </span>
+                              <ul className="space-y-0.5 text-[10.5px] text-slate-200 list-disc list-inside">
+                                {card.clientFriendlyLines.map((line, i) => (
+                                  <li key={i}>{line}</li>
+                                ))}
+                              </ul>
+                              {t.nt && (
+                                <p className="text-[10px] text-slate-400 italic pt-0.5">Obs.: {t.nt}</p>
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    await navigator.clipboard.writeText(card.whatsappText);
+                                    setCopiedPowerCardSid(t.sid);
+                                    window.setTimeout(() => setCopiedPowerCardSid(null), 2500);
+                                  } catch {
+                                    // Clipboard unavailable
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 rounded-lg bg-[#1E293B] hover:bg-[#334155] border border-[#2A3954] px-2.5 py-1 text-[10px] font-semibold text-white cursor-pointer"
+                              >
+                                {copiedPowerCardSid === t.sid ? (
+                                  <Check className="w-3 h-3 text-[#10B981]" />
+                                ) : (
+                                  <Copy className="w-3 h-3 text-[#06B6D4]" />
+                                )}
+                                <span>
+                                  {copiedPowerCardSid === t.sid ? 'Laudo copiado!' : 'Copiar laudo WhatsApp'}
+                                </span>
+                              </button>
+                              {waUrl && (
+                                <a
+                                  href={waUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 rounded-lg bg-[#16A34A] hover:bg-[#15803d] px-2.5 py-1 text-[10px] font-bold text-white"
+                                >
+                                  <MessageCircle className="w-3 h-3" />
+                                  <span>Enviar ao cliente</span>
+                                </a>
+                              )}
+                            </div>
                           </div>
-                          <div className="grid grid-cols-3 gap-1.5 font-mono text-[10px] tabular-nums text-slate-200">
-                            <div>
-                              <span className="text-slate-400 block">Fuga</span>
-                              <strong>{t.fugaMa != null ? `${t.fugaMa} mA` : '—'}</strong>
-                            </div>
-                            <div>
-                              <span className="text-slate-400 block">Boot</span>
-                              <strong>{t.bootA != null ? `${t.bootA} A` : '—'}</strong>
-                            </div>
-                            <div>
-                              <span className="text-slate-400 block">Pico</span>
-                              <strong>{t.ipkA != null ? `${t.ipkA} A` : '—'}</strong>
-                            </div>
-                          </div>
-                          {t.diag && (
-                            <p className="text-slate-200 leading-snug">{t.diag}</p>
-                          )}
-                          {t.nt && (
-                            <p className="text-[10px] text-slate-400 italic">Obs.: {t.nt}</p>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -1919,6 +2083,34 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       value={form.notes}
                       onChange={(e) => setForm((p) => (p ? { ...p, notes: e.target.value } : p))}
                       className="w-full rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-1.5 text-xs"
+                    />
+                  </div>
+                </div>
+
+                <PreDiagnosisPanel
+                  issue={form.issue}
+                  brand={form.brand}
+                  model={form.model}
+                  orders={state.orders}
+                  customDefects={state.cfg.defeitosExtra}
+                  editingOrderId={form.editingId}
+                  onApplyNote={(snippet) =>
+                    setForm((p) =>
+                      p ? { ...p, notes: p.notes ? `${p.notes} · ${snippet}` : snippet } : p
+                    )
+                  }
+                />
+
+                <div className="rounded-xl bg-[#F3F6FB] border border-[#D9E0EC] p-3">
+                  <div className="max-w-[200px] mx-auto">
+                    <AndroidPatternLock
+                      value={form.patternNodes}
+                      onChange={(nodes) =>
+                        setForm((p) => (p ? { ...p, patternNodes: nodes } : p))
+                      }
+                      label="Padrão 3×3 (RAM LGPD)"
+                      compact
+                      defaultRevealed={false}
                     />
                   </div>
                 </div>
@@ -3185,6 +3377,117 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             </form>
           </div>
         )}
+        {/* Modal Modo Engenharia · MicroLab (Easter Egg *#0*# / *#150#) */}
+        {showEngineeringModal && (() => {
+          const tip = APOSTILA_DEFEITOS[engineeringTipIdx % APOSTILA_DEFEITOS.length];
+          const deliveredCount = state.orders.filter((o) => o.status === 'Entregue').length;
+          const openCount = state.orders.filter(
+            (o) => o.status !== 'Entregue' && o.status !== 'Cancelado'
+          ).length;
+          const powerSessionsCount = state.orders.reduce(
+            (s, o) => s + (o.testesFonte?.length || 0),
+            0
+          );
+          let approxKb = 0;
+          try {
+            approxKb = Math.round(new Blob([JSON.stringify(state)]).size / 1024);
+          } catch {
+            approxKb = 0;
+          }
+          return (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#091b36]/75 backdrop-blur-xs p-4 overflow-y-auto">
+              <div className="w-full max-w-lg rounded-2xl bg-[#0B0F17] text-white p-6 border border-[#2A3954] shadow-2xl space-y-4 my-auto">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-[#06B6D4]">
+                    <Cpu className="w-5 h-5" />
+                    <div>
+                      <h3 className="text-sm font-bold text-white">Modo Engenharia · MicroLab</h3>
+                      <p className="text-[11px] font-mono text-slate-400">
+                        Build {APP_VERSION_TAG} · Diagnóstico interno
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowEngineeringModal(false)}
+                    className="p-1.5 rounded-lg text-slate-400 hover:bg-[#131B2E] cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono tabular-nums">
+                  <div className="rounded-xl bg-[#131B2E] border border-[#2A3954] p-2.5">
+                    <span className="text-[10px] text-slate-400 block">OS Totais</span>
+                    <strong className="text-base text-white">{state.orders.length}</strong>
+                  </div>
+                  <div className="rounded-xl bg-[#131B2E] border border-[#2A3954] p-2.5">
+                    <span className="text-[10px] text-slate-400 block">Abertas / Entreg.</span>
+                    <strong className="text-base text-[#06B6D4]">
+                      {openCount}/{deliveredCount}
+                    </strong>
+                  </div>
+                  <div className="rounded-xl bg-[#131B2E] border border-[#2A3954] p-2.5">
+                    <span className="text-[10px] text-slate-400 block">Testes Fonte</span>
+                    <strong className="text-base text-[#10B981]">{powerSessionsCount}</strong>
+                  </div>
+                  <div className="rounded-xl bg-[#131B2E] border border-[#2A3954] p-2.5">
+                    <span className="text-[10px] text-slate-400 block">Base Local</span>
+                    <strong className="text-base text-[#F59E0B]">{approxKb} KB</strong>
+                  </div>
+                </div>
+
+                <div className="rounded-xl bg-[#131B2E] border border-[#2A3954] p-3.5 text-[11px] text-slate-300 flex flex-wrap items-center justify-between gap-2">
+                  <span>Clientes: <strong>{state.clients.length}</strong></span>
+                  <span>Estoque: <strong>{state.parts.length} itens</strong></span>
+                  <span>Garantias: <strong>{state.warranties.length}</strong></span>
+                  <span>Serviços: <strong>{state.servicos.length}</strong></span>
+                </div>
+
+                {tip && (
+                  <div className="rounded-xl bg-[#131B2E] border border-[#06B6D4]/30 p-3.5 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-bold text-[#67E8F9]">{tip.t}</span>
+                      <span className="text-[10px] text-slate-400 shrink-0">{tip.pg}</span>
+                    </div>
+                    <ol className="list-decimal list-inside space-y-1 text-[11px] text-slate-200">
+                      {tip.p.map((st, idx) => (
+                        <li key={idx}>
+                          <span>{st.text}</span>
+                          {st.warning && (
+                            <span className="block text-[10px] text-[#FCA5A5] font-semibold mt-0.5">
+                              ⚠ {st.warning}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                )}
+
+                <div className="flex items-center justify-between gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setEngineeringTipIdx((prev) => (prev + 1) % APOSTILA_DEFEITOS.length)
+                    }
+                    className="inline-flex items-center gap-1.5 rounded-xl bg-[#131B2E] border border-[#2A3954] px-3.5 py-2 text-xs font-semibold text-[#67E8F9] hover:bg-[#1E293B] cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Sortear outra dica</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowEngineeringModal(false)}
+                    className="rounded-xl bg-[#0056ab] px-4 py-2 text-xs font-bold text-white cursor-pointer"
+                  >
+                    Fechar
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Layout de Impressão A4 Completo (1 página compacta, sem custos internos ou margens) */}
@@ -3272,7 +3575,18 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
               </div>
               <div className="px-1.5 py-0.5 border-b border-black">
                 <span className="block text-[8px] uppercase text-gray-600">Senha / padrão (LGPD)</span>
-                <strong>{activeOrder.hasPasscode ? 'Informada ao técnico' : 'Não informada'}</strong>
+                {activeVolatile?.patternNodes?.length ? (
+                  <div className="flex items-center gap-2 pt-0.5">
+                    <AndroidPatternMiniSvg
+                      nodes={activeVolatile.patternNodes}
+                      size={36}
+                      monochrome
+                    />
+                    <strong className="text-[8.5px]">Padrão informado (sessão)</strong>
+                  </div>
+                ) : (
+                  <strong>{activeOrder.hasPasscode ? 'Informada ao técnico' : 'Não informada'}</strong>
+                )}
               </div>
               <div className="px-1.5 py-0.5 col-span-2 border-b border-black">
                 <span className="block text-[8px] uppercase text-gray-600">Defeito relatado</span>
@@ -3497,7 +3811,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                         <img
                           src={clientSig}
                           alt="Assinatura do Cliente"
-                          className="max-h-11 w-auto object-contain mx-auto"
+                          className="max-h-11 w-auto object-contain mx-auto mix-blend-multiply"
                         />
                       ) : null}
                     </div>
@@ -3511,7 +3825,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                         <img
                           src={state.cfg.techSignatureDataUrl}
                           alt="Assinatura do Técnico"
-                          className="max-h-11 w-auto object-contain mx-auto"
+                          className="max-h-11 w-auto object-contain mx-auto mix-blend-multiply"
                         />
                       )}
                     </div>
@@ -3521,7 +3835,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   </div>
                 </div>
                 <p className="text-center text-[8px] text-gray-500 mt-1">
-                  Orçamento antes do serviço · MicroLab OS
+                  Orçamento antes do serviço · MicroLab OS · {APP_VERSION_TAG}
                 </p>
               </div>
             );

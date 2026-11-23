@@ -15,6 +15,7 @@ import {
 
 // Official MicroLab Financial & Pricing Parameters
 
+export const APP_VERSION_TAG = 'v1.3 · Ampere';
 export const OFFICIAL_WEEKLY_SCHEDULE = [4, 4, 4, 4, 4, 4, 2] as const; // Seg–Sáb 4h + Dom 2h = 26h/sem
 export const OFFICIAL_HOURS_BY_DOW = [2, 4, 4, 4, 4, 4, 4] as const; // Date.getDay() order: Dom..Sáb
 export const OFFICIAL_WEEKLY_HOURS = 26;

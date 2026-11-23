@@ -2,10 +2,15 @@ import React, { useState } from 'react';
 import {
   Activity,
   ArrowUpRight,
+  Bell,
+  Cake,
   Calendar,
   Check,
+  ChevronDown,
+  ChevronUp,
   ClipboardList,
   Cpu,
+  DollarSign,
   MessageCircle,
   PackageCheck,
   PackageSearch,
@@ -42,9 +47,67 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const { state, currentUser, canAccessRoute, markOrderPartArrived } = useLabStore();
   const [filterTab, setFilterTab] = useState<'Todas' | 'Bancada' | 'Aguardando' | 'Prontas'>('Todas');
   const [confirmPartOrderId, setConfirmPartOrderId] = useState<number | null>(null);
+  const [activeAlertTab, setActiveAlertTab] = useState<'birthdays' | 'receivables' | 'agenda'>('agenda');
+  const [alertsExpanded, setAlertsExpanded] = useState(false);
   const canSeeFinancialSummary = canAccessRoute('fluxo-de-caixa');
 
   const todayIso = todayIsoLocal();
+  const todayMmDd = todayIso.slice(5, 10);
+
+  const todayBirthdays = canAccessRoute('clientes')
+    ? state.clients.filter((c) => Boolean(c.nasc && c.nasc.slice(5, 10) === todayMmDd))
+    : [];
+
+  const dueReceivableOrders = canAccessRoute('ordens-de-servico')
+    ? state.orders
+        .map((o) => {
+          const total = calcOrderTotalAmount(o);
+          const saldo = Math.round((total - (o.paidAmount || 0)) * 100) / 100;
+          const isDueOrOverdue =
+            ['Pronto', 'Pronto Retirada', 'Entregue'].includes(o.status) ||
+            Boolean(o.isDiagOnly) ||
+            (Boolean(o.expectedDeliveryDate) && (o.expectedDeliveryDate as string) <= todayIso);
+          return { order: o, saldo, isDueOrOverdue };
+        })
+        .filter((x) => x.order.status !== 'Cancelado' && x.saldo > 0.004 && x.isDueOrOverdue)
+        .sort((a, b) =>
+          String(a.order.expectedDeliveryDate || a.order.createdDate || '').localeCompare(
+            String(b.order.expectedDeliveryDate || b.order.createdDate || '')
+          )
+        )
+    : [];
+  const dueReceivablesTotal = dueReceivableOrders.reduce((s, x) => s + x.saldo, 0);
+
+  const todayCapacity = state.scheduleDays.find((d) => d.isToday);
+  const todayUsed = todayCapacity ? todayCapacity.items.reduce((sum, i) => sum + i.hours, 0) : 0;
+  const todayTotal = todayCapacity ? todayCapacity.capacityHours : 4;
+  const occPct = Math.round((todayUsed / Math.max(1, todayTotal)) * 100);
+
+  const todayPromisedOrders = (() => {
+    if (!canAccessRoute('ordens-de-servico') && !canAccessRoute('agenda-de-bancada')) return [];
+    const seen = new Set<number>();
+    const list: { order: ServiceOrder; reason: string }[] = [];
+    state.orders.forEach((o) => {
+      if (o.status === 'Entregue' || o.status === 'Cancelado') return;
+      if (o.expectedDeliveryDate === todayIso) {
+        seen.add(o.id);
+        list.push({ order: o, reason: 'Entrega prometida hoje' });
+      }
+    });
+    (todayCapacity?.items || []).forEach((item) => {
+      if (!item.orderId || seen.has(item.orderId)) return;
+      const ord = state.orders.find((o) => o.id === item.orderId);
+      if (ord && ord.status !== 'Entregue' && ord.status !== 'Cancelado') {
+        seen.add(ord.id);
+        list.push({ order: ord, reason: 'Alocada na Agenda de hoje' });
+      }
+    });
+    return list;
+  })();
+
+  const totalDayAlerts =
+    todayBirthdays.length + dueReceivableOrders.length + todayPromisedOrders.length;
+
   const pendingPartsAlertOrders = canAccessRoute('ordens-de-servico')
     ? state.orders
         .filter(
@@ -71,11 +134,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const lowStockCount = state.parts.filter(
     (p) => p.status === 'Esgotado' || p.status === 'Alerta Reposição'
   ).length;
-
-  const todayCapacity = state.scheduleDays.find((d) => d.isToday);
-  const todayUsed = todayCapacity ? todayCapacity.items.reduce((sum, i) => sum + i.hours, 0) : 0;
-  const todayTotal = todayCapacity ? todayCapacity.capacityHours : 4;
-  const occPct = Math.round((todayUsed / Math.max(1, todayTotal)) * 100);
 
   const filteredOrders = state.orders.filter((order) => {
     if (filterTab === 'Bancada') {
@@ -178,6 +236,239 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             )}
           </div>
         </div>
+      </section>
+
+      {/* Faixa Discreta "Alertas do Dia" (v1.4 Buck) */}
+      <section className="rounded-2xl bg-white border border-[#D9E0EC] px-4 py-3 space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 text-xs font-bold text-[#091b36]">
+            <Bell className="w-4 h-4 text-[#0056ab] shrink-0" />
+            <span>Alertas do Dia</span>
+            <span className="text-[11px] font-medium text-[#727784]">
+              · {formatDateBR(todayIso)} ·{' '}
+              <span className="tabular-nums">
+                {totalDayAlerts} {totalDayAlerts === 1 ? 'gatilho' : 'gatilhos'}
+              </span>
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {canAccessRoute('agenda-de-bancada') || canAccessRoute('ordens-de-servico') ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveAlertTab('agenda');
+                  setAlertsExpanded((prev) => (activeAlertTab === 'agenda' ? !prev : true));
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  alertsExpanded && activeAlertTab === 'agenda'
+                    ? 'bg-[#0056ab] text-white'
+                    : todayPromisedOrders.length > 0
+                    ? 'bg-[#EAF2FD] text-[#0056ab] hover:bg-[#dce9fc]'
+                    : 'bg-[#F3F6FB] text-[#727784] hover:text-[#091b36]'
+                }`}
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span className="tabular-nums">Agenda hoje ({todayPromisedOrders.length})</span>
+              </button>
+            ) : null}
+
+            {canAccessRoute('ordens-de-servico') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveAlertTab('receivables');
+                  setAlertsExpanded((prev) => (activeAlertTab === 'receivables' ? !prev : true));
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  alertsExpanded && activeAlertTab === 'receivables'
+                    ? 'bg-[#0056ab] text-white'
+                    : dueReceivableOrders.length > 0
+                    ? 'bg-[#FFF7E6] text-[#D97706] hover:bg-[#fef0d1]'
+                    : 'bg-[#F3F6FB] text-[#727784] hover:text-[#091b36]'
+                }`}
+              >
+                <DollarSign className="w-3.5 h-3.5" />
+                <span className="tabular-nums">
+                  A receber ({dueReceivableOrders.length}
+                  {dueReceivablesTotal > 0 ? ` · ${formatBRL(dueReceivablesTotal)}` : ''})
+                </span>
+              </button>
+            )}
+
+            {canAccessRoute('clientes') && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveAlertTab('birthdays');
+                  setAlertsExpanded((prev) => (activeAlertTab === 'birthdays' ? !prev : true));
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                  alertsExpanded && activeAlertTab === 'birthdays'
+                    ? 'bg-[#0056ab] text-white'
+                    : todayBirthdays.length > 0
+                    ? 'bg-[#DCFCE7] text-[#16A34A] hover:bg-[#c8f7d8]'
+                    : 'bg-[#F3F6FB] text-[#727784] hover:text-[#091b36]'
+                }`}
+              >
+                <Cake className="w-3.5 h-3.5" />
+                <span className="tabular-nums">Aniversários ({todayBirthdays.length})</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setAlertsExpanded((e) => !e)}
+              className="p-1 rounded-lg text-[#727784] hover:bg-[#F3F6FB] cursor-pointer"
+              aria-label={alertsExpanded ? 'Recolher alertas do dia' : 'Expandir alertas do dia'}
+            >
+              {alertsExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </button>
+          </div>
+        </div>
+
+        {alertsExpanded && (
+          <div className="pt-2 border-t border-[#D9E0EC] space-y-1.5 max-h-48 overflow-y-auto">
+            {activeAlertTab === 'agenda' && (
+              <>
+                {todayPromisedOrders.length === 0 ? (
+                  <p className="text-[11px] text-[#727784]">
+                    Nenhuma OS com entrega prometida ou alocada para hoje.
+                  </p>
+                ) : (
+                  todayPromisedOrders.map(({ order, reason }) => (
+                    <div
+                      key={order.id}
+                      className="flex items-center justify-between gap-2 rounded-lg bg-[#F3F6FB] px-3 py-2 text-xs"
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          canAccessRoute('ordens-de-servico')
+                            ? onSelectOrder(order.id)
+                            : onNavigate('agenda-de-bancada')
+                        }
+                        className="text-left min-w-0 flex-1 cursor-pointer hover:opacity-80"
+                      >
+                        <p className="font-bold text-[#091b36] truncate">
+                          {order.code} · {order.clientName} · {order.device}
+                        </p>
+                        <p className="text-[10.5px] text-[#414752] truncate">
+                          {reason} · Status: {order.status} · Téc. {order.technician}
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onNavigate('agenda-de-bancada')}
+                        className="text-[11px] font-semibold text-[#0056ab] hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        Ver Agenda
+                      </button>
+                    </div>
+                  ))
+                )}
+              </>
+            )}
+
+            {activeAlertTab === 'receivables' && (
+              <>
+                {dueReceivableOrders.length === 0 ? (
+                  <p className="text-[11px] text-[#727784]">
+                    Nenhuma conta a receber vencendo hoje ou em atraso.
+                  </p>
+                ) : (
+                  dueReceivableOrders.map(({ order, saldo }) => (
+                    <div
+                      key={order.id}
+                      className="flex items-center justify-between gap-2 rounded-lg bg-[#F3F6FB] px-3 py-2 text-xs"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onSelectOrder(order.id)}
+                        className="text-left min-w-0 flex-1 cursor-pointer hover:opacity-80"
+                      >
+                        <p className="font-bold text-[#091b36] truncate">
+                          {order.code} · {order.clientName} · {order.device}
+                        </p>
+                        <p className="text-[10.5px] text-[#414752] truncate">
+                          Status: {order.status}
+                          {order.expectedDeliveryDate
+                            ? ` · Prev. ${formatDateBR(order.expectedDeliveryDate)}`
+                            : ''}
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onSelectOrder(order.id)}
+                        className="font-mono font-bold text-[#D97706] hover:underline whitespace-nowrap shrink-0 tabular-nums cursor-pointer"
+                      >
+                        {formatBRL(saldo)}
+                      </button>
+                    </div>
+                  ))
+                )}
+              </>
+            )}
+
+            {activeAlertTab === 'birthdays' && (
+              <>
+                {todayBirthdays.length === 0 ? (
+                  <p className="text-[11px] text-[#727784]">
+                    Nenhum cliente aniversariante hoje ({formatDateBR(todayIso)}).
+                  </p>
+                ) : (
+                  todayBirthdays.map((client) => {
+                    const digits = (client.phone || '').replace(/\D/g, '');
+                    const waPhone = digits.length >= 10 ? (digits.startsWith('55') ? digits : `55${digits}`) : '';
+                    const firstName = (client.name || '').trim().split(/\s+/)[0] || 'cliente';
+                    const waHref = waPhone
+                      ? `https://wa.me/${waPhone}?text=${encodeURIComponent(
+                          `Feliz aniversário, ${firstName}! Um abraço da equipe MicroLab.`
+                        )}`
+                      : '';
+                    return (
+                      <div
+                        key={client.id}
+                        className="flex items-center justify-between gap-2 rounded-lg bg-[#F3F6FB] px-3 py-2 text-xs"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => onNavigate('clientes')}
+                          className="text-left min-w-0 flex-1 cursor-pointer hover:opacity-80"
+                        >
+                          <p className="font-bold text-[#091b36] truncate">{client.name}</p>
+                          <p className="text-[10.5px] text-[#414752] truncate">
+                            {client.phone || 'Telefone não cadastrado'}
+                            {client.lastDevice ? ` · Último aparelho: ${client.lastDevice}` : ''}
+                          </p>
+                        </button>
+                        {waHref ? (
+                          <a
+                            href={waHref}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 rounded-lg bg-[#16A34A] px-2.5 py-1 text-[11px] font-bold text-white hover:bg-[#15803d] whitespace-nowrap shrink-0"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" />
+                            <span>WhatsApp</span>
+                          </a>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => onNavigate('clientes')}
+                            className="text-[11px] font-semibold text-[#0056ab] hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+                          >
+                            Abrir ficha
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </>
+            )}
+          </div>
+        )}
       </section>
 
       {/* Alerta de Peças para Chegar (pecasAlerta v17) */}

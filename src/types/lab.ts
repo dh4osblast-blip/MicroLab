@@ -139,6 +139,12 @@ export interface CustomDefectItem {
   p: string[];
 }
 
+export interface PowerSupplyTestEvidence {
+  kind: 'fuga' | 'pulso' | 'curto' | 'alto' | 'prot' | 'info';
+  text: string;
+  cliText?: string;
+}
+
 export interface PowerSupplyTestEntry {
   sid: number;
   dt: string;
@@ -146,6 +152,14 @@ export interface PowerSupplyTestEntry {
   fugaMa: number | null;
   bootA: number | null;
   ipkA: number | null;
+  vavgV?: number | null;
+  iminA?: number | null;
+  iavgA?: number | null;
+  pmaxW?: number | null;
+  via?: string;
+  prots?: string[];
+  evidencias?: PowerSupplyTestEvidence[];
+  cliResumo?: string;
   diag: string;
   nt: string;
 }

@@ -31,6 +31,7 @@ import {
 import { ServiceCatalogItem, UserRole } from '../types/lab';
 import { formatBRL, useLabStore } from '../store/useLabStore';
 import {
+  APP_VERSION_TAG,
   FIXED_SHORTCUTS,
   calcDiagTaxa,
   calcEffectivePricingFromConfig,
@@ -48,7 +49,7 @@ const normKey = (s: string) =>
     .trim()
     .toLowerCase();
 
-async function resizeTechSignature400Png(file: File): Promise<string> {
+async function resizeTechSignature400Png(file: File, removeLightBg = true): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Não foi possível ler o arquivo de imagem.'));
@@ -73,6 +74,30 @@ async function resizeTechSignature400Png(file: File): Promise<string> {
         }
         ctx.clearRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
+        if (removeLightBg) {
+          try {
+            const imgData = ctx.getImageData(0, 0, w, h);
+            const d = imgData.data;
+            for (let i = 0; i < d.length; i += 4) {
+              const alpha = d[i + 3];
+              if (alpha === 0) continue;
+              const r = d[i];
+              const g = d[i + 1];
+              const b = d[i + 2];
+              const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+              const maxDiff = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
+              if (lum >= 232 && maxDiff < 26) {
+                d[i + 3] = 0;
+              } else if (lum >= 200 && maxDiff < 26) {
+                const factor = (232 - lum) / 32;
+                d[i + 3] = Math.round(alpha * Math.max(0, Math.min(1, factor)));
+              }
+            }
+            ctx.putImageData(imgData, 0, 0);
+          } catch {
+            // Fallback silently if pixel manipulation is blocked
+          }
+        }
         resolve(canvas.toDataURL('image/png'));
       };
       img.src = String(reader.result || '');
@@ -299,6 +324,7 @@ export const SettingsView: React.FC = () => {
   const techSigInputRef = useRef<HTMLInputElement | null>(null);
   const [techSigError, setTechSigError] = useState('');
   const [techSigFeedback, setTechSigFeedback] = useState('');
+  const [removeWhiteBgOnSig, setRemoveWhiteBgOnSig] = useState(true);
 
   const handleSaveFirebaseConfig = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1788,7 +1814,7 @@ export const SettingsView: React.FC = () => {
                 setTechSigError('');
                 setTechSigFeedback('');
                 try {
-                  const dataUrl = await resizeTechSignature400Png(file);
+                  const dataUrl = await resizeTechSignature400Png(file, removeWhiteBgOnSig);
                   updateLabConfig({ techSignatureDataUrl: dataUrl });
                   setTechSigFeedback('Assinatura do técnico salva e sincronizada.');
                   window.setTimeout(() => setTechSigFeedback(''), 3500);
@@ -1842,7 +1868,7 @@ export const SettingsView: React.FC = () => {
               <img
                 src={cfg.techSignatureDataUrl}
                 alt="Preview da assinatura do técnico"
-                className="max-h-20 w-auto object-contain"
+                className="max-h-20 w-auto object-contain mix-blend-multiply"
               />
             ) : (
               <span className="text-[11px] text-[#727784]">
@@ -1851,21 +1877,38 @@ export const SettingsView: React.FC = () => {
             )}
           </div>
 
-          <label className="inline-flex items-center gap-2 text-xs font-medium text-[#091b36] cursor-pointer">
-            <input
-              type="checkbox"
-              checked={cfg.autoPrintTechSignature !== false}
-              onChange={(e) => updateLabConfig({ autoPrintTechSignature: e.target.checked })}
-              className="rounded border-[#D9E0EC] accent-[#0056ab]"
-            />
-            <span>
-              Imprimir automaticamente minha assinatura na OS (A4)
-              <span className="text-[#727784] font-normal">
-                {' '}
-                — quando desmarcado, imprime a linha em branco para assinatura à caneta
+          <div className="flex flex-col gap-2">
+            <label className="inline-flex items-center gap-2 text-xs font-medium text-[#091b36] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={removeWhiteBgOnSig}
+                onChange={(e) => setRemoveWhiteBgOnSig(e.target.checked)}
+                className="rounded border-[#D9E0EC] accent-[#0056ab]"
+              />
+              <span>
+                Remover fundo claro/branco automaticamente ao enviar
+                <span className="text-[#727784] font-normal">
+                  {' '}
+                  (ideal para foto de assinatura em papel; impressão A4 também aplica blend transparente)
+                </span>
               </span>
-            </span>
-          </label>
+            </label>
+            <label className="inline-flex items-center gap-2 text-xs font-medium text-[#091b36] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={cfg.autoPrintTechSignature !== false}
+                onChange={(e) => updateLabConfig({ autoPrintTechSignature: e.target.checked })}
+                className="rounded border-[#D9E0EC] accent-[#0056ab]"
+              />
+              <span>
+                Imprimir automaticamente minha assinatura na OS (A4)
+                <span className="text-[#727784] font-normal">
+                  {' '}
+                  — quando desmarcado, imprime a linha em branco para assinatura à caneta
+                </span>
+              </span>
+            </label>
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium pt-2 border-t border-[#D9E0EC]">
@@ -2739,6 +2782,14 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
       )}
+
+      <footer className="pt-2 pb-4 text-center text-[11px] text-[#727784] border-t border-[#D9E0EC]/70">
+        <span>MicroLab OS</span>
+        <span aria-hidden="true"> · </span>
+        <span className="font-mono font-semibold text-[#414752]">{APP_VERSION_TAG}</span>
+        <span aria-hidden="true"> · </span>
+        <span>PWA Offline-First</span>
+      </footer>
     </div>
   );
 };

@@ -4,7 +4,6 @@ import {
   Check,
   CheckCircle2,
   Eraser,
-  Lock,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
@@ -24,6 +23,8 @@ import {
   calcOrderTotalAmount,
   calcTaxaEntregaByNeighborhood,
 } from '../utils/pricing';
+import { AndroidPatternLock } from '../components/AndroidPatternLock';
+import { PreDiagnosisPanel } from '../components/PreDiagnosisPanel';
 
 interface CheckInOutViewProps {
   defaultTab?: 'checkin' | 'checkout';
@@ -213,12 +214,6 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
     deliveryFee,
     state.cfg.arred,
   ]);
-
-  const togglePatternNode = (node: number) => {
-    setPatternNodes((prev) =>
-      prev.includes(node) ? prev.filter((n) => n !== node) : [...prev, node]
-    );
-  };
 
   const handleMarkAllOk = () => {
     const next: Record<string, 's' | 'n' | 't'> = {};
@@ -650,7 +645,7 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
                 <span>
                   <strong>Proteção LGPD:</strong> O PIN e o padrão gráfico 3×3 ficam{' '}
                   <strong>apenas na memória temporária da sessão</strong> — nunca são salvos no{' '}
-                  <code>localStorage</code>, backup JSON, impressão A4 ou Firebase, e são apagados ao concluir o atendimento ou recarregar.
+                  <code>localStorage</code>, backup JSON ou Firebase (impressão da mini-grade disponível apenas durante a sessão ativa), e são apagados no check-out ou F5.
                 </span>
               </div>
 
@@ -665,6 +660,13 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
                   className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs text-[#091b36]"
                 />
               </div>
+
+              <PreDiagnosisPanel
+                issue={issue}
+                model={device}
+                orders={state.orders}
+                customDefects={state.cfg.defeitosExtra}
+              />
             </div>
 
             {/* Precificação Conectada */}
@@ -907,46 +909,14 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
                 </div>
               </div>
 
-              {/* 3x3 Pattern Grid (Volatile Only) */}
+              {/* 3x3 Interactive Touch Pattern Grid (Volatile RAM Only) */}
               <div className="md:col-span-4 flex flex-col items-center justify-center rounded-xl bg-[#F3F6FB] p-3 border border-[#D9E0EC]">
-                <div className="flex items-center justify-between w-full mb-2">
-                  <span className="flex items-center gap-1 text-[11px] font-semibold text-[#414752]">
-                    <Lock className="w-3.5 h-3.5 text-[#0056ab]" />
-                    <span>Padrão (RAM)</span>
-                  </span>
-                  {patternNodes.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setPatternNodes([])}
-                      className="text-[10px] font-semibold text-[#DC2626] hover:underline cursor-pointer"
-                    >
-                      Limpar
-                    </button>
-                  )}
-                </div>
-                <div className="grid grid-cols-3 gap-2">
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((node) => {
-                    const orderIdx = patternNodes.indexOf(node);
-                    const active = orderIdx >= 0;
-                    return (
-                      <button
-                        key={node}
-                        type="button"
-                        onClick={() => togglePatternNode(node)}
-                        className={`w-7 h-7 rounded-full text-[10px] font-bold flex items-center justify-center transition-colors cursor-pointer ${
-                          active
-                            ? 'bg-[#0056ab] text-white'
-                            : 'bg-white border border-[#D9E0EC] text-[#727784]'
-                        }`}
-                      >
-                        {active ? orderIdx + 1 : '•'}
-                      </button>
-                    );
-                  })}
-                </div>
-                <span className="mt-2 text-[10px] font-mono text-[#727784]">
-                  Seq: {patternNodes.length ? patternNodes.join('→') : 'Não informada'}
-                </span>
+                <AndroidPatternLock
+                  value={patternNodes}
+                  onChange={setPatternNodes}
+                  label="Padrão 3×3 (RAM)"
+                  compact
+                />
               </div>
             </div>
           </div>
