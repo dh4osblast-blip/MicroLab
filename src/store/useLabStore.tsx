@@ -79,6 +79,7 @@ import {
   planejar,
   precoVendaPeca,
   resolveOrderWarrantyDays,
+  roundCurrency3,
   roundStockQty,
   todayIsoLocal,
 } from '../utils/pricing';
@@ -590,6 +591,7 @@ function hydrateLabState(
         ? rawCfg.techSignatureDataUrl
         : undefined,
     autoPrintTechSignature: rawCfg.autoPrintTechSignature !== false,
+    thermalWidth: rawCfg.thermalWidth === '58mm' ? '58mm' : '80mm',
     _ts: rawCfg._ts && typeof rawCfg._ts === 'object' ? { ...rawCfg._ts } : {},
   };
 
@@ -1624,7 +1626,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : o0?.clientAcceptanceChannel || 'WhatsApp'
         : undefined;
     const nextAt =
-      nextAcceptanceType === 'digital_channel'
+      nextAcceptanceType === 'digital_channel' || nextAcceptanceType === 'screen_signature'
         ? data.clientAcceptanceAt !== undefined
           ? data.clientAcceptanceAt
           : o0?.clientAcceptanceAt
@@ -2419,11 +2421,13 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addPart = (partInput: Omit<PartItem, 'id' | 'status'>) => {
     const cleanStock = roundStockQty(Math.max(0, Number(partInput.stock) || 0));
     const cleanMin = roundStockQty(Math.max(0, Number(partInput.minStock) || 0));
+    const cleanCost = roundCurrency3(Math.max(0, Number(partInput.costPrice) || 0));
     const status = computePartStatus(cleanStock, cleanMin);
     const newPart: PartItem = {
       ...partInput,
       stock: cleanStock,
       minStock: cleanMin,
+      costPrice: cleanCost,
       unit: partInput.unit?.trim() || undefined,
       expiryDate: partInput.expiryDate?.trim() || undefined,
       fractionalConsumptionPerOs:
@@ -2450,6 +2454,10 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           partial.stock !== undefined ? roundStockQty(Math.max(0, Number(partial.stock) || 0)) : p.stock;
         const nextMin =
           partial.minStock !== undefined ? roundStockQty(Math.max(0, Number(partial.minStock) || 0)) : p.minStock;
+        const nextCost =
+          partial.costPrice !== undefined
+            ? roundCurrency3(Math.max(0, Number(partial.costPrice) || 0))
+            : p.costPrice;
         const nextUnit = partial.unit !== undefined ? partial.unit.trim() || undefined : p.unit;
         const nextExpiry = partial.expiryDate !== undefined ? partial.expiryDate.trim() || undefined : p.expiryDate;
         const nextFrac =
@@ -2463,6 +2471,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...partial,
           stock: nextStock,
           minStock: nextMin,
+          costPrice: nextCost,
           unit: nextUnit,
           expiryDate: nextExpiry,
           fractionalConsumptionPerOs: nextFrac,

@@ -1,0 +1,132 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Rede de segurança global: nega qualquer coleção não declarada explicitamente
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidUid(uid) {
+      return uid is string && uid.size() >= 1 && uid.size() <= 128 && uid.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidRegDocId(docId) {
+      return docId is string && docId.size() >= 1 && docId.size() <= 200 && docId.matches('^[a-zA-Z0-9_.~\\-]+$');
+    }
+
+    function isValidPublicToken(token) {
+      return token is string && token.size() >= 16 && token.size() <= 128 && token.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isValidRegDoc(data) {
+      return data.keys().hasAll(['l', 'id', 'u', 'd', 'j', 's'])
+        && data.keys().hasOnly(['l', 'id', 'u', 'd', 'j', 's'])
+        && data.l is string && data.l.size() >= 1 && data.l.size() <= 32
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 160
+        && (data.u is int || data.u is float)
+        && data.d is bool
+        && data.j is string && data.j.size() <= 950000
+        && data.s == request.time;
+    }
+
+    function isValidPublicAceiteCreate(data, token) {
+      return data.keys().hasAll([
+          'token', 'ownerUid', 'orderId', 'orderCode', 'status',
+          'clientName', 'device', 'issue', 'serviceName',
+          'servicePrice', 'partsPrice', 'items', 'deliveryFee',
+          'discount', 'totalAmount', 'warrantyDays', 'condExec',
+          'warrantyText', 'quoteHash', 'evidencePhotos',
+          'createdAtMs', 'createdServerAt'
+        ])
+        && data.keys().hasOnly([
+          'token', 'ownerUid', 'orderId', 'orderCode', 'status',
+          'clientName', 'device', 'issue', 'serviceName',
+          'servicePrice', 'partsPrice', 'items', 'deliveryFee',
+          'discount', 'totalAmount', 'warrantyDays', 'condExec',
+          'warrantyText', 'quoteHash', 'evidencePhotos',
+          'createdAtMs', 'createdServerAt'
+        ])
+        && data.token == token
+        && data.ownerUid == request.auth.uid
+        && data.status == 'pending'
+        && data.orderId is int
+        && data.orderCode is string && data.orderCode.size() >= 1 && data.orderCode.size() <= 40
+        && data.clientName is string && data.clientName.size() >= 1 && data.clientName.size() <= 120
+        && data.device is string && data.device.size() >= 1 && data.device.size() <= 160
+        && data.issue is string && data.issue.size() <= 600
+        && data.serviceName is string && data.serviceName.size() <= 200
+        && (data.servicePrice is int || data.servicePrice is float)
+        && (data.partsPrice is int || data.partsPrice is float)
+        && data.items is list && data.items.size() <= 50
+        && (data.deliveryFee is int || data.deliveryFee is float)
+        && (data.discount is int || data.discount is float)
+        && (data.totalAmount is int || data.totalAmount is float)
+        && data.warrantyDays is int
+        && data.condExec is string && data.condExec.size() <= 2000
+        && data.warrantyText is string && data.warrantyText.size() <= 2000
+        && data.quoteHash is string && data.quoteHash.size() == 64 && data.quoteHash.matches('^[a-f0-9]{64}$')
+        && data.evidencePhotos is list && data.evidencePhotos.size() <= 4
+        && data.createdAtMs is int
+        && data.createdServerAt == request.time;
+    }
+
+    function isValidPublicAceiteAcceptUpdate(nextData, prevData) {
+      return prevData.status == 'pending'
+        && nextData.status == 'accepted'
+        && nextData.diff(prevData).affectedKeys().hasOnly([
+          'status',
+          'signaturePng',
+          'acceptedIp',
+          'acceptedUserAgent',
+          'acceptedClientAtMs',
+          'acceptedServerAt'
+        ])
+        && nextData.ownerUid == prevData.ownerUid
+        && nextData.token == prevData.token
+        && nextData.quoteHash == prevData.quoteHash
+        && nextData.totalAmount == prevData.totalAmount
+        && nextData.createdServerAt == prevData.createdServerAt
+        && nextData.signaturePng is string
+        && nextData.signaturePng.size() >= 30
+        && nextData.signaturePng.size() <= 150000
+        && nextData.signaturePng.matches('^data:image/png;base64,.*')
+        && nextData.acceptedIp is string && nextData.acceptedIp.size() >= 1 && nextData.acceptedIp.size() <= 64
+        && nextData.acceptedUserAgent is string && nextData.acceptedUserAgent.size() >= 1 && nextData.acceptedUserAgent.size() <= 400
+        && nextData.acceptedClientAtMs is int
+        && nextData.acceptedServerAt == request.time;
+    }
+
+    // 1) Banco isolado da assistência técnica por UID
+    match /usuarios/{uid}/reg/{docId} {
+      allow list: if isValidUid(uid) && isOwner(uid);
+      allow get: if isValidUid(uid) && isValidRegDocId(docId) && isOwner(uid);
+      allow create, update: if isValidUid(uid) && isValidRegDocId(docId) && isOwner(uid) && isValidRegDoc(incoming());
+      allow delete: if isValidUid(uid) && isValidRegDocId(docId) && isOwner(uid);
+    }
+
+    // 2) Link público de acompanhamento e aceite digital (write-once com bloqueio de listagem)
+    match /public_aceites/{token} {
+      allow list: if false;
+      allow get: if isValidPublicToken(token);
+      allow create: if isSignedIn() && isValidPublicToken(token) && isValidPublicAceiteCreate(incoming(), token);
+      allow update: if isValidPublicToken(token) && isValidPublicAceiteAcceptUpdate(incoming(), existing());
+      allow delete: if isSignedIn() && isValidPublicToken(token) && existing().ownerUid == request.auth.uid;
+    }
+  }
+}

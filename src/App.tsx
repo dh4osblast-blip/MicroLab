@@ -19,6 +19,8 @@ import { BenchPowerView } from './views/BenchPowerView';
 import { DefectsAssistantView } from './views/DefectsAssistantView';
 import { BenchReferenceView } from './views/BenchReferenceView';
 import { SettingsView } from './views/SettingsView';
+import { PublicAcceptanceView } from './views/PublicAcceptanceView';
+import { parsePublicAcceptanceParamsFromLocation } from './services/publicAcceptance';
 
 function LabAppRouter() {
   const { currentUser, canAccessRoute } = useLabStore();
@@ -182,6 +184,31 @@ function LabAppRouter() {
 }
 
 export default function App() {
+  const [publicRoute, setPublicRoute] = useState<{ token: string; projectId: string } | null>(
+    () => parsePublicAcceptanceParamsFromLocation()
+  );
+
+  useEffect(() => {
+    const syncPublicRoute = () => {
+      setPublicRoute(parsePublicAcceptanceParamsFromLocation());
+    };
+    window.addEventListener('hashchange', syncPublicRoute);
+    window.addEventListener('popstate', syncPublicRoute);
+    return () => {
+      window.removeEventListener('hashchange', syncPublicRoute);
+      window.removeEventListener('popstate', syncPublicRoute);
+    };
+  }, []);
+
+  if (publicRoute) {
+    return (
+      <PublicAcceptanceView
+        token={publicRoute.token}
+        projectId={publicRoute.projectId}
+      />
+    );
+  }
+
   return (
     <LabProvider>
       <LabAppRouter />

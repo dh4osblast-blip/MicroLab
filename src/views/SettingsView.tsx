@@ -1911,6 +1911,40 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
 
+        {/* Impressão em Cupom Térmico (58 mm / 80 mm) */}
+        <div className="rounded-xl bg-[#F3F6FB] border border-[#D9E0EC] p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h3 className="text-xs font-bold text-[#091b36]">Largura da Impressora Térmica (Cupom OS / PDV)</h3>
+            <p className="text-[11px] text-[#727784]">
+              Define o layout estreito para bobinas de 58 mm (32 col.) ou 80 mm (42 col.) com PIX QR Code e Padrão 3×3
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {(
+              [
+                ['58mm', 'Bobina 58 mm (32 col.)'],
+                ['80mm', 'Bobina 80 mm (42 col.)'],
+              ] as const
+            ).map(([widthOpt, label]) => {
+              const active = (cfg.thermalWidth || '80mm') === widthOpt;
+              return (
+                <button
+                  key={widthOpt}
+                  type="button"
+                  onClick={() => updateLabConfig({ thermalWidth: widthOpt })}
+                  className={`px-3 py-1.5 rounded-lg border text-xs font-semibold cursor-pointer transition-colors ${
+                    active
+                      ? 'bg-[#0056ab] border-[#0056ab] text-white'
+                      : 'bg-white border-[#D9E0EC] text-[#414752] hover:bg-[#EAF2FD]'
+                  }`}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium pt-2 border-t border-[#D9E0EC]">
           <span className="inline-flex items-center gap-1.5 text-[#16A34A]">
             <ShieldCheck className="w-4 h-4 shrink-0" />

@@ -69,6 +69,14 @@
     size: A4 portrait;
     margin: 8mm 10mm;
   }
+  @page thermal58 {
+    size: 58mm auto;
+    margin: 2mm;
+  }
+  @page thermal80 {
+    size: 80mm auto;
+    margin: 3mm;
+  }
   html,
   body {
     background: #ffffff !important;
@@ -86,6 +94,24 @@
     padding: 0 !important;
     margin: 0 !important;
     max-width: none !important;
+  }
+  html.thermal-print-58 #print-os-a4,
+  html.thermal-print-58 #print-pos-receipt,
+  html.thermal-print-80 #print-os-a4,
+  html.thermal-print-80 #print-pos-receipt {
+    display: none !important;
+  }
+  .thermal-page-58 {
+    page: thermal58;
+    width: 54mm !important;
+    max-width: 54mm !important;
+    box-sizing: border-box !important;
+  }
+  .thermal-page-80 {
+    page: thermal80;
+    width: 72mm !important;
+    max-width: 72mm !important;
+    box-sizing: border-box !important;
   }
   #print-os-a4 {
     width: 100% !important;

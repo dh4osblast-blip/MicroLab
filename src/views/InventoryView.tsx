@@ -24,6 +24,7 @@ import {
   isLowStock,
   margemPctPeca,
   precoVendaPeca,
+  roundCurrency3,
   roundStockQty,
 } from '../utils/pricing';
 import { PurchaseOrderModal } from '../components/PurchaseOrderModal';
@@ -142,7 +143,7 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
 
   const handleCostChange = (val: string) => {
     setPCost(val);
-    const num = parseFloat(val);
+    const num = parseFloat(val.replace(',', '.'));
     if (!Number.isNaN(num) && num > 0) {
       setPSell(precoVendaPeca(num, state.cfg.margem, state.cfg.arred).toFixed(2));
     }
@@ -168,7 +169,7 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
   const handleSavePart = (e: React.FormEvent) => {
     e.preventDefault();
     if (!pName.trim()) return;
-    const costVal = Math.max(0, parseFloat(pCost.replace(',', '.')) || 0);
+    const costVal = roundCurrency3(Math.max(0, parseFloat(pCost.replace(',', '.')) || 0));
     const sellVal = Math.max(
       0,
       parseFloat(pSell.replace(',', '.')) || (costVal > 0 ? precoVendaPeca(costVal, state.cfg.margem, state.cfg.arred) : 0)
@@ -810,7 +811,7 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
                 <label className="block text-[10px] font-semibold text-[#414752] mb-1">Mín</label>
                 <input
                   type="number"
-                  step="any"
+                  step="0.001"
                   min="0"
                   value={pMin}
                   onChange={(e) => setPMin(e.target.value)}
@@ -821,7 +822,7 @@ export const InventoryView: React.FC<{ onGoSuppliers: () => void }> = ({ onGoSup
                 <label className="block text-[10px] font-semibold text-[#414752] mb-1">Custo R$</label>
                 <input
                   type="number"
-                  step="0.01"
+                  step="0.001"
                   min="0"
                   value={pCost}
                   onChange={(e) => handleCostChange(e.target.value)}

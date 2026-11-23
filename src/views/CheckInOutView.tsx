@@ -25,6 +25,7 @@ import {
 } from '../utils/pricing';
 import { AndroidPatternLock } from '../components/AndroidPatternLock';
 import { PreDiagnosisPanel } from '../components/PreDiagnosisPanel';
+import { ImeiTriageInsight } from '../components/ImeiTriageTools';
 import { compressEvidenceImage } from '../services/mediaStore';
 
 interface CheckInOutViewProps {
@@ -601,6 +602,8 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
                   />
                 </div>
               </div>
+
+              <ImeiTriageInsight imei={imei} orders={state.orders} compact />
 
               <div className="rounded-xl bg-[#FFF7E6] border border-[#D97706]/25 px-3 py-2 flex items-start gap-2 text-[11px] text-[#414752]">
                 <ShieldAlert className="w-4 h-4 text-[#D97706] shrink-0 mt-0.5" />

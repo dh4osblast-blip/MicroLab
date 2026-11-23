@@ -252,6 +252,7 @@ export interface LabConfig {
   complexidades: MicroComplexityLevel[];
   techSignatureDataUrl?: string;
   autoPrintTechSignature?: boolean;
+  thermalWidth?: '58mm' | '80mm';
   lastBk?: string;
   _ts?: Record<string, number>;
   updatedAt?: number;
@@ -334,6 +335,13 @@ export interface ServiceOrder {
   clientAcceptanceChannel?: 'WhatsApp' | 'E-mail' | 'Instagram' | 'Presencial';
   clientAcceptanceAt?: string;
   clientSignatureDataUrl?: string;
+  publicAcceptanceToken?: string;
+  publicAcceptanceQuoteHash?: string;
+  publicAcceptanceUrl?: string;
+  publicAcceptanceStatus?: 'pending' | 'accepted';
+  publicAcceptedAt?: string;
+  publicAcceptedIp?: string;
+  publicAcceptedUserAgent?: string;
   entryChecklist?: Record<string, boolean>;
   entryChecklist7?: Record<string, 's' | 'n' | 't'>;
   triage?: OrderTriage;

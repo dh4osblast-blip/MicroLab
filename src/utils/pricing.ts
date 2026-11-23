@@ -16,7 +16,7 @@ import {
 
 // Official MicroLab Financial & Pricing Parameters
 
-export const APP_VERSION_TAG = 'v1.5 · Cortex';
+export const APP_VERSION_TAG = 'v1.6 · Diode';
 export const OFFICIAL_WEEKLY_SCHEDULE = [4, 4, 4, 4, 4, 4, 2] as const; // Seg–Sáb 4h + Dom 2h = 26h/sem
 export const OFFICIAL_HOURS_BY_DOW = [2, 4, 4, 4, 4, 4, 4] as const; // Date.getDay() order: Dom..Sáb
 export const OFFICIAL_WEEKLY_HOURS = 26;
@@ -227,6 +227,7 @@ export function createDefaultLabConfig(): LabConfig {
     defeitosExtra: [],
     complexidades: DEFAULT_COMPLEXIDADES.map((c) => ({ ...c })),
     autoPrintTechSignature: true,
+    thermalWidth: '80mm',
     _ts: {},
     updatedAt: 1,
   };
@@ -1724,3 +1725,87 @@ export function calcTopExecutedServices(
     (a, b) => b.count - a.count || b.totalRevenue - a.totalRevenue
   );
 }
+
+export function roundCurrency3(n: number): number {
+  return Math.round((Number(n) || 0) * 1000) / 1000;
+}
+
+export function normalizeImeiDigits(raw: string): string {
+  return String(raw || '').replace(/\D/g, '');
+}
+
+export interface ImeiValidationResult {
+  digits: string;
+  status: 'empty' | 'incomplete' | 'valid' | 'invalid';
+  label: string;
+}
+
+/**
+ * Valida matematicamente IMEI de 15 dígitos pelo Algoritmo de Luhn (100% offline).
+ */
+export function validateImeiLuhn(raw: string): ImeiValidationResult {
+  const digits = normalizeImeiDigits(raw);
+  if (!digits) {
+    return { digits: '', status: 'empty', label: '' };
+  }
+  if (digits.length !== 15) {
+    return {
+      digits,
+      status: 'incomplete',
+      label: `Incompleto (${digits.length}/15 dígitos)`,
+    };
+  }
+  let sum = 0;
+  for (let i = 0; i < 15; i++) {
+    let digit = Number(digits[i]);
+    if (i % 2 === 1) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+  }
+  if (sum % 10 === 0) {
+    return { digits, status: 'valid', label: 'IMEI válido (Luhn OK)' };
+  }
+  return { digits, status: 'invalid', label: 'Dígito verificador inválido' };
+}
+
+export interface LocalImeiHistoryResult {
+  matches: ServiceOrder[];
+  hasFlagged: boolean;
+  flaggedStatus: 'impedido' | 'suspeito' | '';
+}
+
+export function findLocalImeiHistory(
+  imeiRaw: string,
+  orders: ServiceOrder[],
+  excludeOrderId?: number
+): LocalImeiHistoryResult {
+  const digits = normalizeImeiDigits(imeiRaw);
+  const cleanRaw = String(imeiRaw || '').trim().toLowerCase();
+  if (digits.length < 8 && cleanRaw.length < 8) {
+    return { matches: [], hasFlagged: false, flaggedStatus: '' };
+  }
+  const matches = (orders || [])
+    .filter((o) => {
+      if (excludeOrderId !== undefined && o.id === excludeOrderId) return false;
+      const oRaw = String(o.imei || '').trim().toLowerCase();
+      if (!oRaw || oRaw === 'não informado') return false;
+      const oDigits = normalizeImeiDigits(o.imei);
+      if (digits.length >= 8 && oDigits) {
+        return oDigits === digits;
+      }
+      return oRaw === cleanRaw;
+    })
+    .sort((a, b) => b.id - a.id);
+
+  const hasImpedido = matches.some((m) => m.triage?.imeiSt === 'impedido');
+  const hasSuspeito = matches.some((m) => m.triage?.imeiSt === 'suspeito');
+  const flaggedStatus = hasImpedido ? 'impedido' : hasSuspeito ? 'suspeito' : '';
+  return {
+    matches,
+    hasFlagged: Boolean(flaggedStatus),
+    flaggedStatus,
+  };
+}
+

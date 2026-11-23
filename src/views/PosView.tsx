@@ -22,6 +22,7 @@ import { formatBRL, useLabStore } from '../store/useLabStore';
 import { calcSaleTotalAmount, formatDateBR } from '../utils/pricing';
 import { PixQrGraphic } from '../components/PixModal';
 import { buildPixPayload, formatPixKeyForEmv } from '../utils/pix';
+import { PosThermalReceipt, runWithThermalPrintMode } from '../components/ThermalReceiptPrint';
 
 interface PosCatalogItem {
   id: string;
@@ -78,6 +79,7 @@ export const PosView: React.FC = () => {
     received: number;
     change: number;
   } | null>(null);
+  const [printMode, setPrintMode] = useState<'a4' | 'thermal'>('a4');
   const [pixCopied, setPixCopied] = useState(false);
   const [copiedSaleId, setCopiedSaleId] = useState<string | null>(null);
   const [confirmReverseId, setConfirmReverseId] = useState<string | null>(null);
@@ -261,12 +263,30 @@ export const PosView: React.FC = () => {
     setCashReceived('');
   };
 
-  const handlePrintHistorySale = (sale: SaleRecord) => {
+  const handlePrintHistorySale = (sale: SaleRecord, mode: 'a4' | 'thermal' = 'a4') => {
     setLastSale(sale);
     setLastSaleCashInfo(null);
-    window.setTimeout(() => {
-      window.print();
-    }, 60);
+    if (mode === 'thermal') {
+      const width = state.cfg.thermalWidth === '58mm' ? '58mm' : '80mm';
+      runWithThermalPrintMode(width, () => setPrintMode('thermal'));
+    } else {
+      setPrintMode('a4');
+      window.setTimeout(() => {
+        window.print();
+      }, 60);
+    }
+  };
+
+  const handlePrintReceiptModal = (mode: 'a4' | 'thermal') => {
+    if (mode === 'thermal') {
+      const width = state.cfg.thermalWidth === '58mm' ? '58mm' : '80mm';
+      runWithThermalPrintMode(width, () => setPrintMode('thermal'));
+    } else {
+      setPrintMode('a4');
+      window.setTimeout(() => {
+        window.print();
+      }, 60);
+    }
   };
 
   const handleConfirmReverse = (saleId: string) => {
@@ -740,11 +760,19 @@ export const PosView: React.FC = () => {
                     </a>
                     <button
                       type="button"
-                      onClick={() => handlePrintHistorySale(sale)}
+                      onClick={() => handlePrintHistorySale(sale, 'a4')}
                       className="inline-flex items-center gap-1 rounded-xl border border-[#D9E0EC] bg-white px-3 py-1.5 text-[11px] font-semibold text-[#091b36] hover:bg-[#EAF2FD] cursor-pointer"
                     >
                       <Printer className="w-3.5 h-3.5" />
-                      <span>Imprimir</span>
+                      <span>Recibo A4</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handlePrintHistorySale(sale, 'thermal')}
+                      className="inline-flex items-center gap-1 rounded-xl border border-[#D9E0EC] bg-white px-3 py-1.5 text-[11px] font-semibold text-[#0056ab] hover:bg-[#EAF2FD] cursor-pointer"
+                    >
+                      <Printer className="w-3.5 h-3.5" />
+                      <span>Cupom ({state.cfg.thermalWidth === '58mm' ? '58mm' : '80mm'})</span>
                     </button>
                     <button
                       type="button"
@@ -853,11 +881,19 @@ export const PosView: React.FC = () => {
               </a>
               <button
                 type="button"
-                onClick={() => window.print()}
+                onClick={() => handlePrintReceiptModal('a4')}
                 className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#D9E0EC] py-2.5 px-3 text-xs font-semibold text-[#091b36] cursor-pointer"
               >
                 <Printer className="w-4 h-4" />
-                <span>Imprimir</span>
+                <span>Recibo A4</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePrintReceiptModal('thermal')}
+                className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl border border-[#0056ab]/30 bg-[#EAF2FD] py-2.5 px-3 text-xs font-semibold text-[#0056ab] cursor-pointer"
+              >
+                <Printer className="w-4 h-4" />
+                <span>Cupom {state.cfg.thermalWidth === '58mm' ? '58mm' : '80mm'}</span>
               </button>
               <button
                 type="button"
@@ -872,8 +908,8 @@ export const PosView: React.FC = () => {
       )}
     </div>
 
-    {/* Layout Dedicado de Impressão do Recibo PDV */}
-    {lastSale && (
+    {/* Layout Dedicado de Impressão do Recibo PDV (A4 ou Cupom Térmico) */}
+    {lastSale && printMode === 'a4' && (
       <section
         id="print-pos-receipt"
         className="hidden print:block bg-white text-black text-[11px] leading-snug max-w-md mx-auto p-2"
@@ -998,6 +1034,16 @@ export const PosView: React.FC = () => {
           Comprovante sem valor fiscal · Garantia legal de 90 dias (CDC) · MicroLab OS
         </p>
       </section>
+    )}
+    {lastSale && printMode === 'thermal' && (
+      <PosThermalReceipt
+        sale={lastSale}
+        cfg={state.cfg}
+        clientLabel={resolveSaleClient(lastSale).label}
+        pixMerchant={state.labProfile.pixMerchant}
+        pixCity={state.labProfile.pixCity}
+        cashInfo={lastSaleCashInfo}
+      />
     )}
     </>
   );

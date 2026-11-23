@@ -1,0 +1,86 @@
+{
+  "entities": {
+    "SyncRegistryRecord": {
+      "title": "SyncRegistryRecord",
+      "description": "Registro LWW isolado por UID contendo coleção, ID, timestamp de atualização, tombstone e payload JSON sanitizado.",
+      "type": "object",
+      "properties": {
+        "l": { "type": "string", "maxLength": 32 },
+        "id": { "type": "string", "maxLength": 160 },
+        "u": { "type": "number" },
+        "d": { "type": "boolean" },
+        "j": { "type": "string", "maxLength": 950000 },
+        "s": { "type": "string", "format": "date-time" }
+      },
+      "required": ["l", "id", "u", "d", "j", "s"]
+    },
+    "PublicAcceptance": {
+      "title": "PublicAcceptance",
+      "description": "Documento público sanitizado (write-once) para acompanhamento de orçamento e aceite digital do cliente via link tokenizado.",
+      "type": "object",
+      "properties": {
+        "token": { "type": "string", "minLength": 16, "maxLength": 128, "pattern": "^[a-zA-Z0-9_-]+$" },
+        "ownerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "orderId": { "type": "integer" },
+        "orderCode": { "type": "string", "maxLength": 40 },
+        "status": { "type": "string", "enum": ["pending", "accepted"] },
+        "clientName": { "type": "string", "maxLength": 120 },
+        "device": { "type": "string", "maxLength": 160 },
+        "issue": { "type": "string", "maxLength": 600 },
+        "serviceName": { "type": "string", "maxLength": 200 },
+        "servicePrice": { "type": "number" },
+        "partsPrice": { "type": "number" },
+        "items": { "type": "array" },
+        "deliveryFee": { "type": "number" },
+        "discount": { "type": "number" },
+        "totalAmount": { "type": "number" },
+        "warrantyDays": { "type": "integer" },
+        "condExec": { "type": "string", "maxLength": 2000 },
+        "warrantyText": { "type": "string", "maxLength": 2000 },
+        "quoteHash": { "type": "string", "minLength": 64, "maxLength": 64 },
+        "evidencePhotos": { "type": "array" },
+        "createdAtMs": { "type": "integer" },
+        "createdServerAt": { "type": "string", "format": "date-time" },
+        "signaturePng": { "type": "string", "maxLength": 150000 },
+        "acceptedIp": { "type": "string", "maxLength": 64 },
+        "acceptedUserAgent": { "type": "string", "maxLength": 400 },
+        "acceptedClientAtMs": { "type": "integer" },
+        "acceptedServerAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "token",
+        "ownerUid",
+        "orderId",
+        "orderCode",
+        "status",
+        "clientName",
+        "device",
+        "issue",
+        "serviceName",
+        "servicePrice",
+        "partsPrice",
+        "items",
+        "deliveryFee",
+        "discount",
+        "totalAmount",
+        "warrantyDays",
+        "condExec",
+        "warrantyText",
+        "quoteHash",
+        "evidencePhotos",
+        "createdAtMs",
+        "createdServerAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/usuarios/{uid}/reg/{docId}": {
+      "schema": { "$ref": "#/entities/SyncRegistryRecord" },
+      "description": "Banco sincronizado isolado por UID da assistência técnica."
+    },
+    "/public_aceites/{token}": {
+      "schema": { "$ref": "#/entities/PublicAcceptance" },
+      "description": "Link público de acompanhamento e aceite digital write-once por token criptográfico."
+    }
+  }
+}

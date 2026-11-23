@@ -9,17 +9,21 @@ import {
   Cpu,
   Edit3,
   Eraser,
+  ExternalLink,
   Eye,
   EyeOff,
+  Link2,
   Lock,
   MessageCircle,
   PackageCheck,
   Plus,
   Printer,
   QrCode,
+  RefreshCw,
   RotateCcw,
   Search,
   ShieldAlert,
+  ShieldCheck,
   Smartphone,
   Trash2,
   Wrench,
@@ -60,9 +64,16 @@ import {
 } from '../utils/pricing';
 import { AndroidPatternLock, AndroidPatternMiniSvg } from '../components/AndroidPatternLock';
 import { PreDiagnosisPanel } from '../components/PreDiagnosisPanel';
+import { ImeiTriageInsight } from '../components/ImeiTriageTools';
+import { OrderThermalReceipt, runWithThermalPrintMode } from '../components/ThermalReceiptPrint';
 import { buildElectricalCardDetails } from '../utils/preDiagnosis';
 import { APOSTILA_DEFEITOS } from './DefectsAssistantView';
 import { getCachedMediaDataUrl, getMediaRecord, useOrderMedia } from '../services/mediaStore';
+import {
+  fetchPublicAcceptanceDoc,
+  publishOrderPublicAcceptance,
+} from '../services/publicAcceptance';
+import { loadAuthState } from '../services/firebaseSync';
 
 interface OrdersViewProps {
   selectedOrderId: number | null;
@@ -155,6 +166,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   const {
     state,
     storageUid,
+    firebaseConfig,
     currentUser,
     isAtendente,
     canAccessRoute,
@@ -175,6 +187,12 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   const [engineeringTipIdx, setEngineeringTipIdx] = useState(0);
   const [showVolatileSecret, setShowVolatileSecret] = useState(false);
   const [copiedPowerCardSid, setCopiedPowerCardSid] = useState<number | null>(null);
+  const [printMode, setPrintMode] = useState<'a4' | 'thermal'>('a4');
+  const [publicLinkBusy, setPublicLinkBusy] = useState(false);
+  const [publicLinkChecking, setPublicLinkChecking] = useState(false);
+  const [publicLinkFeedback, setPublicLinkFeedback] = useState('');
+  const [publicLinkError, setPublicLinkError] = useState('');
+  const [copiedPublicUrl, setCopiedPublicUrl] = useState(false);
 
   const [viewTab, setViewTab] = useState<ViewTab>('Todas');
   const [search, setSearch] = useState('');
@@ -489,7 +507,155 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
 
   useEffect(() => {
     setShowVolatileSecret(false);
+    setPublicLinkError('');
+    setPublicLinkFeedback('');
   }, [activeOrder?.id]);
+
+  const handlePrintOrder = (mode: 'a4' | 'thermal') => {
+    if (mode === 'thermal') {
+      const width = state.cfg.thermalWidth === '58mm' ? '58mm' : '80mm';
+      runWithThermalPrintMode(width, () => setPrintMode('thermal'));
+    } else {
+      setPrintMode('a4');
+      window.setTimeout(() => {
+        window.print();
+      }, 60);
+    }
+  };
+
+  const reconcilePublicAcceptance = async (order: ServiceOrder, silent = false) => {
+    if (!order.publicAcceptanceToken) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      if (!silent) {
+        setPublicLinkError('Sem internet para verificar o aceite na nuvem.');
+      }
+      return;
+    }
+    const projectId = (firebaseConfig.projectId || loadAuthState().projectId || '').trim();
+    if (!projectId) {
+      if (!silent) {
+        setPublicLinkError('Project ID do Firebase não configurado.');
+      }
+      return;
+    }
+    if (!silent) {
+      setPublicLinkChecking(true);
+      setPublicLinkError('');
+      setPublicLinkFeedback('');
+    }
+    try {
+      const remote = await fetchPublicAcceptanceDoc(projectId, order.publicAcceptanceToken);
+      if (!remote) {
+        if (!silent) {
+          setPublicLinkError('Documento público não encontrado no Firestore.');
+        }
+        return;
+      }
+      if (remote.status === 'accepted') {
+        const dt = remote.acceptedServerAt
+          ? new Date(remote.acceptedServerAt)
+          : remote.acceptedClientAtMs
+          ? new Date(remote.acceptedClientAtMs)
+          : new Date();
+        const acceptedAtFormatted = Number.isNaN(dt.getTime())
+          ? formatNowPtBr()
+          : dt.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+
+        const needsSync =
+          order.publicAcceptanceStatus !== 'accepted' ||
+          (!order.hasClientSignature && Boolean(remote.signaturePng));
+        if (needsSync) {
+          saveServiceOrder({
+            id: order.id,
+            data: {
+              clientId: order.clientId,
+              clientName: order.clientName,
+              device: order.device,
+              issue: order.issue,
+              status: order.status === 'Orçamento' ? 'Aprovado' : order.status,
+              clientAcceptanceType: 'screen_signature',
+              clientAcceptanceAt: acceptedAtFormatted,
+              clientSignatureDataUrl: remote.signaturePng,
+              publicAcceptanceStatus: 'accepted',
+              publicAcceptedAt: acceptedAtFormatted,
+              publicAcceptedIp: remote.acceptedIp,
+              publicAcceptedUserAgent: remote.acceptedUserAgent,
+              publicAcceptanceQuoteHash: remote.quoteHash,
+            },
+          });
+          setPublicLinkFeedback(
+            'Aceite digital confirmado pelo cliente! OS aprovada e assinatura salva localmente.'
+          );
+        } else if (!silent) {
+          setPublicLinkFeedback('Aceite digital já estava sincronizado nesta OS.');
+        }
+      } else if (!silent) {
+        setPublicLinkFeedback('Aguardando o cliente assinar pelo link público.');
+      }
+    } catch (err) {
+      if (!silent) {
+        setPublicLinkError(err instanceof Error ? err.message : 'Erro ao consultar aceite público.');
+      }
+    } finally {
+      if (!silent) setPublicLinkChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!activeOrder?.publicAcceptanceToken) return;
+    if (activeOrder.publicAcceptanceStatus === 'accepted' && activeOrder.hasClientSignature) return;
+    void reconcilePublicAcceptance(activeOrder, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeOrder?.id, activeOrder?.publicAcceptanceToken]);
+
+  const handleGeneratePublicLink = async (order: ServiceOrder) => {
+    setPublicLinkBusy(true);
+    setPublicLinkError('');
+    setPublicLinkFeedback('');
+    try {
+      const warrantyDays = resolveOrderWarrantyDays(
+        order.serviceCatalogId,
+        state.servicos,
+        state.cfg
+      );
+      const published = await publishOrderPublicAcceptance({
+        order,
+        cfg: state.cfg,
+        warrantyDays,
+      });
+
+      saveServiceOrder({
+        id: order.id,
+        data: {
+          clientId: order.clientId,
+          clientName: order.clientName,
+          device: order.device,
+          issue: order.issue,
+          status: order.status,
+          publicAcceptanceToken: published.token,
+          publicAcceptanceQuoteHash: published.quoteHash,
+          publicAcceptanceUrl: published.url,
+          publicAcceptanceStatus: 'pending',
+          publicAcceptedAt: undefined,
+          publicAcceptedIp: undefined,
+          publicAcceptedUserAgent: undefined,
+        },
+      });
+
+      try {
+        await navigator.clipboard.writeText(published.url);
+        setCopiedPublicUrl(true);
+        window.setTimeout(() => setCopiedPublicUrl(false), 3000);
+        setPublicLinkFeedback('Link público gerado e copiado para a área de transferência!');
+      } catch {
+        setPublicLinkFeedback('Link público gerado com sucesso!');
+      }
+    } catch (err) {
+      setPublicLinkError(err instanceof Error ? err.message : 'Falha ao gerar link público.');
+    } finally {
+      setPublicLinkBusy(false);
+    }
+  };
 
   const statusColor = (status: OrderStatus) => {
     switch (status) {
@@ -854,6 +1020,19 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     return `https://wa.me/${waDigits}?text=${encodeURIComponent(body)}`;
   };
 
+  const buildPublicLinkWhatsappUrl = (o: ServiceOrder, url: string) => {
+    const total = calcOrderTotalAmount(o);
+    const msg = [
+      `Olá ${o.clientName}!`,
+      `Segue o link seguro da *MicroLab* para conferir o orçamento detalhado e assinar digitalmente a OS ${o.code} (${o.device}):`,
+      `Valor Total: *${formatBRL(total)}*`,
+      url,
+    ].join('\n');
+    const digits = o.clientPhone.replace(/\D/g, '');
+    const waDigits = digits.length <= 11 && digits.length >= 8 ? `55${digits}` : digits;
+    return `https://wa.me/${waDigits}?text=${encodeURIComponent(msg)}`;
+  };
+
   const activeOrderTotal = activeOrder ? calcOrderTotalAmount(activeOrder) : 0;
   const activeOrderPaid = activeOrder ? Number(activeOrder.paidAmount) || 0 : 0;
   const activeOrderSaldo = Math.max(0, Math.round((activeOrderTotal - activeOrderPaid) * 100) / 100);
@@ -1150,12 +1329,23 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => window.print()}
+                      onClick={() => handlePrintOrder('a4')}
                       className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-[#D9E0EC] text-xs font-semibold text-[#414752] hover:bg-[#F3F6FB] cursor-pointer"
                       title="Imprimir OS em A4"
                     >
                       <Printer className="w-4 h-4" />
                       <span className="hidden sm:inline">A4</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handlePrintOrder('thermal')}
+                      className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-[#0056ab]/30 bg-[#EAF2FD] text-xs font-semibold text-[#0056ab] hover:bg-[#dfe8ff] cursor-pointer"
+                      title={`Imprimir Cupom Térmico (${state.cfg.thermalWidth === '58mm' ? '58 mm' : '80 mm'})`}
+                    >
+                      <Printer className="w-4 h-4" />
+                      <span className="hidden sm:inline">
+                        Cupom {state.cfg.thermalWidth === '58mm' ? '58mm' : '80mm'}
+                      </span>
                     </button>
                     <a
                       href={buildOrderWhatsappUrl(activeOrder)}
@@ -1396,7 +1586,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       {acceptanceType === 'screen_signature' && clientSig && (
                         <div className="rounded-lg bg-white border border-[#D9E0EC] p-2">
                           <span className="block text-[10px] text-[#727784] mb-1">
-                            Assinatura coletada na tela:
+                            Assinatura digital coletada:
                           </span>
                           <img
                             src={clientSig}
@@ -1405,6 +1595,132 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                           />
                         </div>
                       )}
+
+                      {/* Link Público de Acompanhamento & Aceite Digital */}
+                      <div className="rounded-lg bg-white border border-[#D9E0EC] p-2.5 space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-1.5">
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold text-[#091b36]">
+                            <Link2 className="w-3.5 h-3.5 text-[#0056ab]" />
+                            <span>Link Público de Aceite Digital</span>
+                          </span>
+                          <button
+                            type="button"
+                            disabled={publicLinkBusy}
+                            onClick={() => void handleGeneratePublicLink(activeOrder)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-[#0056ab] px-2.5 py-1 text-[10px] font-bold text-white hover:bg-[#1b6fd1] cursor-pointer disabled:opacity-50"
+                          >
+                            <Link2 className="w-3 h-3" />
+                            <span>
+                              {publicLinkBusy
+                                ? 'Publicando...'
+                                : activeOrder.publicAcceptanceToken
+                                ? 'Gerar Novo Link'
+                                : 'Gerar Link de Aceite'}
+                            </span>
+                          </button>
+                        </div>
+
+                        {activeOrder.publicAcceptanceStatus === 'accepted' && (
+                          <div className="rounded-lg bg-[#DCFCE7] border border-[#16A34A]/30 p-2 text-[10px] text-[#091b36] space-y-0.5">
+                            <div className="font-bold text-[#16A34A] flex items-center gap-1">
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              <span>Selo de Aceite Digital Verificado</span>
+                            </div>
+                            {activeOrder.publicAcceptedAt && (
+                              <div>Data/Hora: {activeOrder.publicAcceptedAt}</div>
+                            )}
+                            {activeOrder.publicAcceptedIp && (
+                              <div>IP: {activeOrder.publicAcceptedIp}</div>
+                            )}
+                            {activeOrder.publicAcceptanceQuoteHash && (
+                              <div className="font-mono">
+                                SHA-256: {activeOrder.publicAcceptanceQuoteHash.slice(0, 16)}…
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {activeOrder.publicAcceptanceUrl && (
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <input
+                                type="text"
+                                readOnly
+                                value={activeOrder.publicAcceptanceUrl}
+                                className="flex-1 rounded-md border border-[#D9E0EC] bg-[#F3F6FB] px-2 py-1 text-[10px] font-mono text-[#414752] truncate"
+                              />
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    await navigator.clipboard.writeText(
+                                      activeOrder.publicAcceptanceUrl || ''
+                                    );
+                                    setCopiedPublicUrl(true);
+                                    window.setTimeout(() => setCopiedPublicUrl(false), 2000);
+                                  } catch {
+                                    // ignore
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 rounded-md border border-[#D9E0EC] bg-[#F3F6FB] px-2 py-1 text-[10px] font-semibold text-[#0056ab] cursor-pointer"
+                              >
+                                {copiedPublicUrl ? (
+                                  <Check className="w-3 h-3 text-[#16A34A]" />
+                                ) : (
+                                  <Copy className="w-3 h-3" />
+                                )}
+                                <span>{copiedPublicUrl ? 'Copiado' : 'Copiar'}</span>
+                              </button>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <a
+                                href={buildPublicLinkWhatsappUrl(
+                                  activeOrder,
+                                  activeOrder.publicAcceptanceUrl
+                                )}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 rounded-md bg-[#DCFCE7] px-2 py-1 text-[10px] font-bold text-[#16A34A] hover:bg-[#bbf7d0]"
+                              >
+                                <MessageCircle className="w-3 h-3" />
+                                <span>Enviar no WhatsApp</span>
+                              </a>
+                              <a
+                                href={activeOrder.publicAcceptanceUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 rounded-md border border-[#D9E0EC] bg-[#F3F6FB] px-2 py-1 text-[10px] font-semibold text-[#414752] hover:bg-[#EAF2FD]"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                <span>Abrir Link</span>
+                              </a>
+                              <button
+                                type="button"
+                                disabled={publicLinkChecking}
+                                onClick={() => void reconcilePublicAcceptance(activeOrder, false)}
+                                className="inline-flex items-center gap-1 rounded-md border border-[#D9E0EC] bg-[#F3F6FB] px-2 py-1 text-[10px] font-semibold text-[#0056ab] hover:bg-[#EAF2FD] cursor-pointer disabled:opacity-50"
+                              >
+                                <RefreshCw
+                                  className={`w-3 h-3 ${publicLinkChecking ? 'animate-spin' : ''}`}
+                                />
+                                <span>Verificar Aceite</span>
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {publicLinkError && (
+                          <div className="rounded-md bg-[#FEE2E2] px-2 py-1 text-[10px] font-medium text-[#DC2626]">
+                            {publicLinkError}
+                          </div>
+                        )}
+                        {publicLinkFeedback && (
+                          <div className="rounded-md bg-[#EAF2FD] px-2 py-1 text-[10px] font-medium text-[#0056ab]">
+                            {publicLinkFeedback}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   );
                 })()}
@@ -2057,6 +2373,13 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     />
                   </div>
                 </div>
+
+                <ImeiTriageInsight
+                  imei={form.imei}
+                  orders={state.orders}
+                  excludeOrderId={form.editingId}
+                  compact
+                />
 
                 <div>
                   <span className="block text-[10px] font-semibold text-[#414752] mb-1">Acessórios deixados</span>
@@ -3528,7 +3851,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       </div>
 
       {/* Layout de Impressão A4 Completo (1 página compacta, sem custos internos ou margens) */}
-      {activeOrder && (
+      {activeOrder && printMode === 'a4' && (
         <section
           id="print-os-a4"
           className="hidden print:block bg-white text-black text-[10px] leading-tight"
@@ -3853,7 +4176,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     </div>
                     <div className="border-t border-black pt-1 font-bold">Assinatura do Cliente</div>
                     <div>{activeOrder.clientName}</div>
-                    <div className="text-[8px] text-gray-600 mt-0.5">Data: ____/____/________</div>
+                    {activeOrder.publicAcceptanceStatus === 'accepted' ? (
+                      <div className="text-[7px] text-gray-800 mt-0.5 leading-tight border border-black/40 px-1 py-0.5 bg-gray-50 font-mono">
+                        <strong>ACEITE DIGITAL</strong> · {activeOrder.publicAcceptedAt || ''} · IP{' '}
+                        {activeOrder.publicAcceptedIp || 'N/D'} · SHA{' '}
+                        {(activeOrder.publicAcceptanceQuoteHash || '').slice(0, 12)}
+                      </div>
+                    ) : (
+                      <div className="text-[8px] text-gray-600 mt-0.5">Data: ____/____/________</div>
+                    )}
                   </div>
                   <div>
                     <div className="h-11 flex items-end justify-center mb-1">
@@ -3877,6 +4208,19 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             );
           })()}
         </section>
+      )}
+
+      {activeOrder && printMode === 'thermal' && (
+        <OrderThermalReceipt
+          order={activeOrder}
+          cfg={state.cfg}
+          pixMerchant={state.labProfile.pixMerchant}
+          pixCity={state.labProfile.pixCity}
+          defaultTechName={defaultTechName}
+          volatilePatternNodes={activeVolatile?.patternNodes}
+          clientSignatureDataUrl={activeOrderMedia.clientSig}
+          warrantyUntil={activeOrderWarrantyUntil}
+        />
       )}
     </>
   );

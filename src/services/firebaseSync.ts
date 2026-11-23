@@ -470,6 +470,12 @@ async function fetchJson(url: string, options?: RequestInit) {
   return body;
 }
 
+export async function ensureFirebaseIdToken(
+  auth: FirebaseAuthState
+): Promise<{ token: string; auth: FirebaseAuthState }> {
+  return ensureIdToken(auth);
+}
+
 async function ensureIdToken(auth: FirebaseAuthState): Promise<{ token: string; auth: FirebaseAuthState }> {
   if (auth.idToken && Date.now() < auth.expiresAt - 60000) {
     return { token: auth.idToken, auth };
