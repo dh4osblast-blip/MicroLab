@@ -1,4 +1,5 @@
-import { CustomDefectItem, PowerSupplyTestEntry, ServiceOrder } from '../types/lab';
+import { CustomDefectItem, OrderTriage, PowerSupplyTestEntry, ServiceOrder } from '../types/lab';
+import type { BenchCopilotResult } from '../services/geminiByok';
 import { APOSTILA_DEFEITOS, DefectTemplate } from '../views/DefectsAssistantView';
 
 function normText(s: string): string {
@@ -247,3 +248,146 @@ export function buildElectricalCardDetails(
     whatsappText,
   };
 }
+
+/**
+ * Fallback local determinístico para o Copiloto Técnico de Bancada quando os modelos Gemini retornarem 503/indisponibilidade.
+ * Cruza APOSTILA_DEFEITOS + histórico local do mesmo modelo + eventos elétricos da fonte ZK-SK150C.
+ */
+export function buildLocalBenchCopilotFallback(params: {
+  issue: string;
+  brand?: string;
+  model?: string;
+  device?: string;
+  orders: ServiceOrder[];
+  customDefects?: CustomDefectItem[];
+  editingOrderId?: number | null;
+  triage?: OrderTriage;
+  powerTests?: PowerSupplyTestEntry[];
+  telemetry?: ServiceOrder['telemetry'];
+  activeTemplate?: DefectTemplate | null;
+}): BenchCopilotResult {
+  const modelQuery = (params.model || params.device || '').trim();
+  const offline = computeOfflinePreDiagnosis({
+    issue: params.issue || params.activeTemplate?.t || '',
+    brand: params.brand,
+    model: modelQuery,
+    orders: params.orders,
+    customDefects: params.customDefects,
+    editingOrderId: params.editingOrderId,
+  });
+
+  const templates = params.activeTemplate
+    ? [
+        params.activeTemplate,
+        ...offline.matchedTemplates
+          .map((m) => m.template)
+          .filter((t) => t.id !== params.activeTemplate?.id),
+      ].slice(0, 2)
+    : offline.matchedTemplates.map((m) => m.template);
+
+  const hipotesesPrincipais: string[] = [];
+  const pontosMedicao: string[] = [];
+  const alertasSeguranca: string[] = [];
+
+  if (templates.length > 0) {
+    templates.forEach((tpl, idx) => {
+      hipotesesPrincipais.push(
+        idx === 0
+          ? `Rotina principal compatível: ${tpl.t} (${tpl.pg}).`
+          : `Rotina secundária relacionada: ${tpl.t} (${tpl.pg}).`
+      );
+    });
+    templates[0].p.forEach((step) => {
+      pontosMedicao.push(step.text);
+      if (step.warning) {
+        alertasSeguranca.push(step.warning);
+      }
+    });
+  } else {
+    hipotesesPrincipais.push(
+      'Realizar inspeção visual sob microscópio (FPCs, oxidação, componentes aquecendo) e triagem inicial na fonte de bancada.'
+    );
+    pontosMedicao.push(
+      'Medir consumo em standby na fonte com limite de segurança (4,0 V / 1 A–2 A).',
+      'Conferir condução reversa nos pinos principais do conector de bateria e FPC de carga/display.'
+    );
+  }
+
+  if (offline.modelHistory) {
+    const h = offline.modelHistory;
+    hipotesesPrincipais.push(
+      `Histórico MicroLab (${h.modelQuery}): ${h.deliveredCount} OS entregues${
+        h.matchingIssueCount > 0 ? ` (${h.matchingIssueCount} com queixa semelhante)` : ''
+      }${h.avgHours ? ` · tempo médio ${h.avgHours}h` : ''}${
+        h.topServices.length > 0 ? ` · serviços: ${h.topServices.join(', ')}` : ''
+      }.`
+    );
+  }
+
+  if (params.telemetry) {
+    hipotesesPrincipais.push(
+      `Telemetria ZK-SK150C vinculada: ${params.telemetry.voltage.toFixed(2)}V / ${params.telemetry.current.toFixed(
+        3
+      )}A (${params.telemetry.power.toFixed(2)}W) — ${params.telemetry.note}.`
+    );
+  }
+
+  if (Array.isArray(params.powerTests) && params.powerTests.length > 0) {
+    params.powerTests.slice(0, 3).forEach((t) => {
+      const diagLower = (t.diag || '').toLowerCase();
+      hipotesesPrincipais.push(
+        `Fonte ZK-SK150C (${t.dt}): ${t.diag || 'Leitura registrada'} · fuga=${
+          t.fugaMa ?? '--'
+        }mA · boot=${t.bootA ?? '--'}A · pico=${t.ipkA ?? '--'}A.`
+      );
+      if (diagLower.includes('curto') || (t.prots && t.prots.length > 0)) {
+        pontosMedicao.push(
+          'Limitar fonte a 1 A e mapear aquecimento na malha primária com breu ou câmera térmica.'
+        );
+      } else if ((t.fugaMa ?? 0) > 20 || diagLower.includes('fuga')) {
+        pontosMedicao.push(
+          `Investigar fuga de ${t.fugaMa ?? '>20'} mA em standby desconectando periféricos antes de analisar PMIC/capacitores.`
+        );
+      }
+    });
+  }
+
+  if (params.triage?.bat) {
+    alertasSeguranca.push(
+      'Bateria inchada registrada na triagem: PROIBIDO aplicar choque de 5,2 V ou usar espátula metálica.'
+    );
+  }
+  if (params.triage?.oxi) {
+    alertasSeguranca.push(
+      'Sinais de oxidação: remover periféricos e isolar microfones com fita térmica/alumínio antes da cuba ultrassônica.'
+    );
+  }
+  if (params.triage?.apagado) {
+    alertasSeguranca.push(
+      'Aparelho deu entrada apagado: iniciar alimentação na fonte com proteção de corrente reduzida.'
+    );
+  }
+
+  const resumoPartes = [
+    templates[0] ? `Roteiro: ${templates[0].t}` : '',
+    offline.modelHistory
+      ? `Histórico ${offline.modelHistory.modelQuery}: ${offline.modelHistory.deliveredCount} OS similares`
+      : '',
+    params.powerTests?.[0]
+      ? `Fonte ZK-SK150C: ${params.powerTests[0].diag || 'ok'} (fuga ${
+          params.powerTests[0].fugaMa ?? '--'
+        }mA, pico ${params.powerTests[0].ipkA ?? '--'}A)`
+      : '',
+  ].filter(Boolean);
+
+  return {
+    hipotesesPrincipais: Array.from(new Set(hipotesesPrincipais)),
+    pontosMedicao: Array.from(new Set(pontosMedicao)),
+    alertasSeguranca: Array.from(new Set(alertasSeguranca)),
+    resumoTecnicoOs:
+      resumoPartes.join(' · ') ||
+      'Pré-diagnóstico offline: verificar consumo em fonte de bancada, oxidação e FPCs.',
+    sourceMode: 'local_fallback',
+  };
+}
+

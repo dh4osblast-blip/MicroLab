@@ -1,3 +1,4 @@
+import type { GoogleGenAI, Model, Type as GeminiTypeNamespace } from '@google/genai';
 import {
   ImeiValidationResult,
   normalizeImeiDigits,
@@ -10,6 +11,14 @@ import {
  */
 export const GEMINI_BYOK_STORAGE_KEY = 'microlab_gemini_byok_key';
 export const GEMINI_MODEL_ID = 'gemini-3.8-flash';
+export const GEMINI_FALLBACK_MODELS = [
+  'gemini-3.8-flash-lite',
+  'gemini-3.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-flash-latest',
+] as const;
+
+const PRIMARY_RETRY_DELAY_MS = 1200;
 
 export function getGeminiByokKey(): string {
   try {
@@ -101,6 +110,22 @@ function extractReadableMessage(err: unknown): string {
   return String(err || '');
 }
 
+export function isGeminiAuthOrPermissionError(err: unknown): boolean {
+  if (err && typeof err === 'object') {
+    const anyErr = err as { status?: number; code?: number; error?: { code?: number; status?: string } };
+    const code = anyErr.status ?? anyErr.code ?? anyErr.error?.code;
+    if (code === 401 || code === 403) return true;
+  }
+  const lower = extractReadableMessage(err).toLowerCase();
+  return (
+    lower.includes('api_key_invalid') ||
+    lower.includes('api key not valid') ||
+    lower.includes('401') ||
+    lower.includes('403') ||
+    lower.includes('permission_denied')
+  );
+}
+
 export function isGeminiUnavailable503(err: unknown): boolean {
   if (err && typeof err === 'object') {
     const anyErr = err as { status?: number; code?: number; error?: { code?: number; status?: string } };
@@ -120,26 +145,26 @@ export function isGeminiUnavailable503(err: unknown): boolean {
   );
 }
 
-const RETRY_DELAYS_MS = [1500, 3000] as const;
-
-export async function callGeminiWithRetry<T>(fn: () => Promise<T>): Promise<T> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      const canRetry =
-        attempt < RETRY_DELAYS_MS.length &&
-        isGeminiUnavailable503(err) &&
-        (typeof navigator === 'undefined' || navigator.onLine !== false);
-      if (!canRetry) {
-        throw err;
-      }
-      await new Promise<void>((resolve) => window.setTimeout(resolve, RETRY_DELAYS_MS[attempt]));
+export function isModelFallbackableError(err: unknown): boolean {
+  if (isGeminiAuthOrPermissionError(err)) return false;
+  if (isGeminiUnavailable503(err)) return true;
+  if (err && typeof err === 'object') {
+    const anyErr = err as { status?: number; code?: number; error?: { code?: number; status?: string } };
+    const code = anyErr.status ?? anyErr.code ?? anyErr.error?.code;
+    if (code === 404 || code === 429) return true;
+    if (anyErr.error?.status === 'NOT_FOUND' || anyErr.error?.status === 'RESOURCE_EXHAUSTED') {
+      return true;
     }
   }
-  throw lastErr;
+  const lower = extractReadableMessage(err).toLowerCase();
+  return (
+    lower.includes('404') ||
+    lower.includes('not found') ||
+    lower.includes('no longer available') ||
+    lower.includes('429') ||
+    lower.includes('quota') ||
+    lower.includes('resource_exhausted')
+  );
 }
 
 function formatGeminiError(err: unknown): string {
@@ -163,7 +188,10 @@ function formatGeminiError(err: unknown): string {
   return raw ? `Erro ao consultar Gemini: ${raw}` : 'Erro inesperado ao consultar Gemini.';
 }
 
-async function createGenAiSdkClient(explicitKey?: string) {
+async function createGenAiSdkClient(explicitKey?: string): Promise<{
+  ai: GoogleGenAI;
+  Type: typeof GeminiTypeNamespace;
+}> {
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     throw new Error('Dispositivo offline. Conecte-se à internet para usar a IA de bancada.');
   }
@@ -173,6 +201,130 @@ async function createGenAiSdkClient(explicitKey?: string) {
   }
   const { GoogleGenAI, Type } = await import('@google/genai');
   return { ai: new GoogleGenAI({ apiKey: key }), Type };
+}
+
+async function discoverDynamicFlashModels(
+  ai: GoogleGenAI,
+  alreadyTried: Set<string>
+): Promise<string[]> {
+  try {
+    const pager = await ai.models.list({ config: { pageSize: 50 } });
+    const discovered: string[] = [];
+    const excludedTokens = [
+      'tts',
+      'embedding',
+      'audio',
+      'image',
+      'robotics',
+      'computer-use',
+      'customtools',
+      'live',
+      'aqa',
+    ];
+    let scanned = 0;
+    for await (const m of pager as AsyncIterable<Model>) {
+      scanned++;
+      if (scanned > 80) break;
+      const cleanId = String(m.name || '')
+        .replace(/^models\//i, '')
+        .trim();
+      if (!cleanId || alreadyTried.has(cleanId)) continue;
+      const lower = cleanId.toLowerCase();
+      if (!lower.startsWith('gemini-') || !lower.includes('flash')) continue;
+      if (excludedTokens.some((tok) => lower.includes(tok))) continue;
+      if (
+        Array.isArray(m.supportedActions) &&
+        m.supportedActions.length > 0 &&
+        !m.supportedActions.includes('generateContent')
+      ) {
+        continue;
+      }
+      discovered.push(cleanId);
+      if (discovered.length >= 4) break;
+    }
+    return discovered;
+  } catch {
+    return [];
+  }
+}
+
+export interface GeminiRetryCallResult<T> {
+  data: T;
+  modelUsed: string;
+  isFallbackModel: boolean;
+}
+
+/**
+ * Executa chamada Gemini com:
+ * 1) Modelo principal (`gemini-3.8-flash`) + 1 retentativa rápida de 1200ms em 503/UNAVAILABLE
+ * 2) Cadeia de fallback em modelos leves da família Flash (`gemini-3.8-flash-lite`, `gemini-3.5-flash`, `gemini-2.5-flash-lite`, ...)
+ * 3) Descoberta dinâmica via `ai.models.list()` de modelos `gemini-*-flash*` compatíveis com `generateContent`
+ */
+export async function callGeminiWithRetry<T>(
+  ai: GoogleGenAI,
+  runner: (modelId: string) => Promise<T>
+): Promise<GeminiRetryCallResult<T>> {
+  const tried = new Set<string>();
+  let lastErr: unknown;
+
+  // 1. Tenta modelo principal com 1 retentativa rápida de 1200ms em caso de 503
+  tried.add(GEMINI_MODEL_ID);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const data = await runner(GEMINI_MODEL_ID);
+      return { data, modelUsed: GEMINI_MODEL_ID, isFallbackModel: false };
+    } catch (err) {
+      lastErr = err;
+      if (!isModelFallbackableError(err)) {
+        throw err;
+      }
+      const canFastRetryPrimary =
+        attempt === 0 &&
+        isGeminiUnavailable503(err) &&
+        (typeof navigator === 'undefined' || navigator.onLine !== false);
+      if (canFastRetryPrimary) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, PRIMARY_RETRY_DELAY_MS));
+        continue;
+      }
+      break;
+    }
+  }
+
+  // 2. Fallback estático para modelos leves da família Flash
+  for (const candidate of GEMINI_FALLBACK_MODELS) {
+    if (tried.has(candidate)) continue;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) break;
+    tried.add(candidate);
+    try {
+      const data = await runner(candidate);
+      return { data, modelUsed: candidate, isFallbackModel: true };
+    } catch (err) {
+      lastErr = err;
+      if (!isModelFallbackableError(err)) {
+        throw err;
+      }
+    }
+  }
+
+  // 3. Descoberta dinâmica via ai.models.list()
+  if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+    const dynamicCandidates = await discoverDynamicFlashModels(ai, tried);
+    for (const candidate of dynamicCandidates) {
+      if (tried.has(candidate)) continue;
+      tried.add(candidate);
+      try {
+        const data = await runner(candidate);
+        return { data, modelUsed: candidate, isFallbackModel: true };
+      } catch (err) {
+        lastErr = err;
+        if (!isModelFallbackableError(err)) {
+          throw err;
+        }
+      }
+    }
+  }
+
+  throw lastErr;
 }
 
 /**
@@ -189,6 +341,8 @@ function scrubAccidentalIdentifiers(text: string): string {
 export async function testGeminiByokKey(apiKey: string): Promise<{
   ok: boolean;
   overloaded?: boolean;
+  modelUsed?: string;
+  isFallbackModel?: boolean;
   message: string;
   latencyMs?: number;
 }> {
@@ -202,9 +356,9 @@ export async function testGeminiByokKey(apiKey: string): Promise<{
   const started = Date.now();
   try {
     const { ai } = await createGenAiSdkClient(cleanKey);
-    const response = await callGeminiWithRetry(() =>
+    const { data: response, modelUsed, isFallbackModel } = await callGeminiWithRetry(ai, (model) =>
       ai.models.generateContent({
-        model: GEMINI_MODEL_ID,
+        model,
         contents: 'Responda apenas com a palavra: OK',
       })
     );
@@ -215,8 +369,12 @@ export async function testGeminiByokKey(apiKey: string): Promise<{
     }
     return {
       ok: true,
+      modelUsed,
+      isFallbackModel,
       latencyMs,
-      message: `Chave válida! Conexão confirmada com ${GEMINI_MODEL_ID} (${latencyMs} ms).`,
+      message: isFallbackModel
+        ? `Chave válida! Modelo alternativo ${modelUsed} respondeu em ${latencyMs} ms (${GEMINI_MODEL_ID} com pico de demanda).`
+        : `Chave válida! Conexão confirmada com ${modelUsed} (${latencyMs} ms).`,
     };
   } catch (err) {
     if (isGeminiUnavailable503(err)) {
@@ -224,7 +382,7 @@ export async function testGeminiByokKey(apiKey: string): Promise<{
         ok: false,
         overloaded: true,
         message:
-          'Sua chave autenticou no Google Gemini, mas os servidores estão com pico momentâneo de tráfego (503). Você pode salvar a chave normalmente e tentar novamente em alguns segundos.',
+          'Sua chave autenticou no Google Gemini, mas os servidores estão com pico momentâneo de tráfego (503). Você pode salvar a chave normalmente e os recursos contarão com fallback automático.',
       };
     }
     return { ok: false, message: formatGeminiError(err) };
@@ -280,6 +438,8 @@ export interface LabelOcrResult {
   imei: string;
   observacao: string;
   luhn: ImeiValidationResult;
+  modelUsed: string;
+  isFallbackModel: boolean;
 }
 
 export async function extractDeviceAndImeiFromPhoto(file: File): Promise<LabelOcrResult> {
@@ -287,9 +447,9 @@ export async function extractDeviceAndImeiFromPhoto(file: File): Promise<LabelOc
   const { base64Data, mimeType } = await compressLabelImageInMemory(file, 1024);
 
   try {
-    const response = await callGeminiWithRetry(() =>
+    const { data: response, modelUsed, isFallbackModel } = await callGeminiWithRetry(ai, (model) =>
       ai.models.generateContent({
-        model: GEMINI_MODEL_ID,
+        model,
         contents: [
           {
             inlineData: {
@@ -342,6 +502,8 @@ export async function extractDeviceAndImeiFromPhoto(file: File): Promise<LabelOc
       imei: imeiDigits,
       observacao: String(parsed.observacao || '').trim(),
       luhn,
+      modelUsed,
+      isFallbackModel,
     };
   } catch (err) {
     throw new Error(formatGeminiError(err));
@@ -371,6 +533,9 @@ export interface BenchCopilotResult {
   pontosMedicao: string[];
   alertasSeguranca: string[];
   resumoTecnicoOs: string;
+  sourceMode: 'gemini' | 'local_fallback';
+  modelUsed?: string;
+  isFallbackModel?: boolean;
 }
 
 export async function analyzeBenchCopilot(
@@ -399,9 +564,9 @@ export async function analyzeBenchCopilot(
   };
 
   try {
-    const response = await callGeminiWithRetry(() =>
+    const { data: response, modelUsed, isFallbackModel } = await callGeminiWithRetry(ai, (model) =>
       ai.models.generateContent({
-        model: GEMINI_MODEL_ID,
+        model,
         contents: [
           'Dados técnicos anonimizados da bancada (sem dados pessoais do cliente):',
           JSON.stringify(sanitizedContext, null, 2),
@@ -456,8 +621,17 @@ export async function analyzeBenchCopilot(
         ? parsed.alertasSeguranca.map((x) => String(x).trim()).filter(Boolean)
         : [],
       resumoTecnicoOs: String(parsed.resumoTecnicoOs || '').trim(),
+      sourceMode: 'gemini',
+      modelUsed,
+      isFallbackModel,
     };
   } catch (err) {
+    if (isModelFallbackableError(err)) {
+      const errorToPropagate = new Error(formatGeminiError(err));
+      (errorToPropagate as Error & { isTransientModelExhausted?: boolean }).isTransientModelExhausted =
+        true;
+      throw errorToPropagate;
+    }
     throw new Error(formatGeminiError(err));
   }
 }
@@ -479,13 +653,137 @@ export interface SanitizedQuoteTranslatorInput {
   warrantyDays: number;
 }
 
+export interface QuoteTranslationResult {
+  bodyText: string;
+  sourceMode: 'gemini' | 'local_fallback';
+  modelUsed?: string;
+  isFallbackModel?: boolean;
+}
+
+const formatBrlSimple = (val: number): string =>
+  Number(val || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+function simplifyTechnicalJargonForClient(
+  issue: string,
+  serviceName?: string,
+  technicalNotes?: string
+): string {
+  const combined = [serviceName, issue, technicalNotes].filter(Boolean).join(' · ');
+  const lower = combined
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+
+  const explanations: string[] = [];
+  if (lower.includes('pmic') || lower.includes('power manager') || lower.includes('reball')) {
+    explanations.push('reparo técnico de precisão no circuito responsável pelo gerenciamento de energia da placa');
+  }
+  if (lower.includes('oxid') || lower.includes('molhou') || lower.includes('agua') || lower.includes('cuba')) {
+    explanations.push('limpeza técnica especializada na placa e conectores para remover sinais de umidade/oxidação');
+  }
+  if (lower.includes('vbus') || lower.includes('curto') || lower.includes('malha') || lower.includes('fuga')) {
+    explanations.push('correção elétrica na placa principal para restabelecer o funcionamento seguro');
+  }
+  if (lower.includes('fpc') || lower.includes('conector') || lower.includes('carga') || lower.includes('usb')) {
+    explanations.push('reparo ou substituição do conector interno de alimentação/dados');
+  }
+  if (lower.includes('tela') || lower.includes('display') || lower.includes('modulo') || lower.includes('touch')) {
+    explanations.push('substituição ou ajuste do conjunto de tela/display com testes de imagem e toque');
+  }
+  if (lower.includes('bateria')) {
+    explanations.push('troca e calibração da bateria com verificação de autonomia e segurança');
+  }
+  if (lower.includes('software') || lower.includes('loop') || lower.includes('recovery')) {
+    explanations.push('recuperação e atualização do sistema operacional do aparelho');
+  }
+
+  if (explanations.length > 0) {
+    return explanations.join('; ');
+  }
+  return (serviceName || issue || 'avaliação e reparo técnico do equipamento').trim();
+}
+
+/**
+ * Motor local determinístico do MicroLab OS para traduzir orçamento quando todos os modelos Gemini estão indisponíveis (503/429/404).
+ */
+export function buildLocalQuoteTranslationFallback(
+  input: SanitizedQuoteTranslatorInput
+): QuoteTranslationResult {
+  const friendlyScope = simplifyTechnicalJargonForClient(
+    input.issue,
+    input.serviceName,
+    input.technicalNotes
+  );
+  const remaining = Math.max(
+    0,
+    Math.round(((Number(input.totalAmount) || 0) - (Number(input.paidAmount) || 0)) * 100) / 100
+  );
+
+  const lines: string[] = [
+    `Aqui é da *MicroLab Assistência Técnica*. Segue o resumo claro do seu atendimento para a *OS ${input.orderCode}* (*${input.device}*):`,
+    '',
+    `📋 *O que será feito:* ${friendlyScope}.`,
+  ];
+
+  if (input.serviceName || input.servicePrice > 0) {
+    lines.push(
+      `🔧 *Serviço principal:* ${input.serviceName || 'Mão de obra técnica'}${
+        input.servicePrice > 0 ? ` — ${formatBrlSimple(input.servicePrice)}` : ''
+      }`
+    );
+  }
+
+  if (input.items.length > 0) {
+    lines.push('🧩 *Peças e itens previstos:*');
+    input.items.forEach((it) => {
+      lines.push(`• ${it.qty}× ${it.description} (${formatBrlSimple(it.subtotal)})`);
+    });
+  } else if (input.partsPrice > 0) {
+    lines.push(`🧩 *Peças:* ${formatBrlSimple(input.partsPrice)}`);
+  }
+
+  if (input.deliveryFee > 0) {
+    lines.push(`🚚 *Taxa de entrega/coleta:* ${formatBrlSimple(input.deliveryFee)}`);
+  }
+  if (input.discount > 0) {
+    lines.push(`🏷️ *Desconto aplicado:* -${formatBrlSimple(input.discount)}`);
+  }
+
+  lines.push('');
+  lines.push(`💰 *Valor Total: ${formatBrlSimple(input.totalAmount)}*`);
+
+  if (input.paidAmount > 0) {
+    lines.push(
+      `✅ Já pago: ${formatBrlSimple(input.paidAmount)} · *Saldo restante: ${formatBrlSimple(remaining)}*`
+    );
+  }
+
+  lines.push(
+    `🛡️ *Garantia:* ${input.warrantyDays} dias referentes ao serviço executado e à peça substituída (conforme termo da OS).`
+  );
+  lines.push('');
+  lines.push('Qualquer dúvida ou para confirmar a execução, basta responder esta mensagem!');
+
+  return {
+    bodyText: lines.join('\n'),
+    sourceMode: 'local_fallback',
+  };
+}
+
 /**
  * Traduz jargão técnico de bancada para mensagem acessível de WhatsApp.
  * LGPD: Não recebe nome, telefone, CPF ou senhas do cliente. A saudação com nome é anexada localmente após a resposta.
  */
 export async function translateQuoteForCustomer(
   input: SanitizedQuoteTranslatorInput
-): Promise<string> {
+): Promise<QuoteTranslationResult> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return buildLocalQuoteTranslationFallback(input);
+  }
+  if (!hasGeminiByokKey()) {
+    throw new Error('Chave API Gemini (BYOK) não configurada neste dispositivo.');
+  }
+
   const { ai } = await createGenAiSdkClient();
 
   const payload = {
@@ -507,9 +805,9 @@ export async function translateQuoteForCustomer(
   };
 
   try {
-    const response = await callGeminiWithRetry(() =>
+    const { data: response, modelUsed, isFallbackModel } = await callGeminiWithRetry(ai, (model) =>
       ai.models.generateContent({
-        model: GEMINI_MODEL_ID,
+        model,
         contents: [
           'Transforme os dados técnicos abaixo no corpo de uma mensagem cordial e clara para WhatsApp (sem saudação inicial com nome do cliente, pois o sistema adicionará o nome localmente):',
           JSON.stringify(payload, null, 2),
@@ -531,10 +829,18 @@ export async function translateQuoteForCustomer(
 
     const text = (response.text || '').trim();
     if (!text) {
-      throw new Error('O modelo retornou uma mensagem vazia.');
+      return buildLocalQuoteTranslationFallback(input);
     }
-    return text;
+    return {
+      bodyText: text,
+      sourceMode: 'gemini',
+      modelUsed,
+      isFallbackModel,
+    };
   } catch (err) {
+    if (isModelFallbackableError(err)) {
+      return buildLocalQuoteTranslationFallback(input);
+    }
     throw new Error(formatGeminiError(err));
   }
 }

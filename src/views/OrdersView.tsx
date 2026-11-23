@@ -70,7 +70,7 @@ import { PreDiagnosisPanel } from '../components/PreDiagnosisPanel';
 import { ImeiTriageInsight } from '../components/ImeiTriageTools';
 import { GeminiOcrButton } from '../components/GeminiOcrButton';
 import { OrderThermalReceipt, runWithThermalPrintMode } from '../components/ThermalReceiptPrint';
-import { buildElectricalCardDetails } from '../utils/preDiagnosis';
+import { buildElectricalCardDetails, buildLocalBenchCopilotFallback } from '../utils/preDiagnosis';
 import { APOSTILA_DEFEITOS } from './DefectsAssistantView';
 import { getCachedMediaDataUrl, getMediaRecord, useOrderMedia } from '../services/mediaStore';
 import {
@@ -213,6 +213,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   const [aiQuoteBusy, setAiQuoteBusy] = useState(false);
   const [aiQuoteError, setAiQuoteError] = useState('');
   const [aiQuoteText, setAiQuoteText] = useState('');
+  const [aiQuoteMeta, setAiQuoteMeta] = useState<{
+    sourceMode: 'gemini' | 'local_fallback';
+    modelUsed?: string;
+    isFallbackModel?: boolean;
+  } | null>(null);
   const [aiQuoteCopied, setAiQuoteCopied] = useState(false);
 
   useEffect(() => {
@@ -220,6 +225,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     setAiCopilotError('');
     setAiCopilotAppended(false);
     setAiQuoteText('');
+    setAiQuoteMeta(null);
     setAiQuoteError('');
     setAiQuoteCopied(false);
   }, [selectedOrderId]);
@@ -1074,8 +1080,29 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   const handleRunOrderCopilot = async (o: ServiceOrder) => {
     setAiCopilotError('');
     setAiCopilotAppended(false);
+
+    const runLocalCopilotFallback = () => {
+      const localRes = buildLocalBenchCopilotFallback({
+        issue: o.issue,
+        brand: o.brand,
+        model: o.model,
+        device: o.device,
+        orders: state.orders,
+        customDefects: state.cfg.defeitosExtra,
+        editingOrderId: o.id,
+        triage: o.triage,
+        powerTests: o.testesFonte,
+        telemetry: o.telemetry,
+      });
+      setAiCopilotResult(localRes);
+    };
+
     const availability = getGeminiAvailability();
     if (!availability.available) {
+      if (availability.reason === 'offline') {
+        runLocalCopilotFallback();
+        return;
+      }
       setAiCopilotError(availability.message);
       return;
     }
@@ -1129,7 +1156,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       });
       setAiCopilotResult(res);
     } catch (err) {
-      setAiCopilotError(err instanceof Error ? err.message : 'Falha ao consultar Copiloto IA.');
+      if ((err as Error & { isTransientModelExhausted?: boolean })?.isTransientModelExhausted) {
+        runLocalCopilotFallback();
+      } else {
+        setAiCopilotError(err instanceof Error ? err.message : 'Falha ao consultar Copiloto IA.');
+      }
     } finally {
       setAiCopilotBusy(false);
     }
@@ -1139,7 +1170,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     setAiQuoteError('');
     setAiQuoteCopied(false);
     const availability = getGeminiAvailability();
-    if (!availability.available) {
+    if (!availability.available && availability.reason === 'missing_key') {
       setAiQuoteError(availability.message);
       return;
     }
@@ -1148,7 +1179,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     const warrantyDays = resolveOrderWarrantyDays(o.serviceCatalogId, state.servicos, state.cfg);
     setAiQuoteBusy(true);
     try {
-      const translatedBody = await translateQuoteForCustomer({
+      const res = await translateQuoteForCustomer({
         orderCode: o.code,
         device: o.device,
         status: o.status,
@@ -1171,7 +1202,12 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       const greeting = o.clientName?.trim()
         ? `Olá, *${o.clientName.trim()}*!\n\n`
         : 'Olá!\n\n';
-      setAiQuoteText(`${greeting}${translatedBody}`);
+      setAiQuoteText(`${greeting}${res.bodyText}`);
+      setAiQuoteMeta({
+        sourceMode: res.sourceMode,
+        modelUsed: res.modelUsed,
+        isFallbackModel: res.isFallbackModel,
+      });
     } catch (err) {
       setAiQuoteError(err instanceof Error ? err.message : 'Falha ao traduzir orçamento via IA.');
     } finally {
@@ -1524,15 +1560,23 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                 {/* Tradutor de Orçamento para Linguagem do Cliente (WhatsApp IA) */}
                 {(aiQuoteError || aiQuoteText) && (
                   <div className="rounded-xl bg-[#F3F6FB] border border-[#0056ab]/30 p-3.5 space-y-2.5 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="inline-flex items-center gap-1.5 font-bold text-[#0056ab]">
-                        <Sparkles className="w-3.5 h-3.5" />
-                        <span>Tradutor de Orçamento p/ Cliente (WhatsApp IA)</span>
-                      </span>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="inline-flex items-center gap-1.5 font-bold text-[#0056ab]">
+                          <Sparkles className="w-3.5 h-3.5" />
+                          <span>Tradutor de Orçamento p/ Cliente</span>
+                        </span>
+                        {aiQuoteMeta?.sourceMode === 'local_fallback' && (
+                          <span className="px-2 py-0.5 rounded bg-[#FFF7E6] border border-[#D97706]/30 text-[10px] font-semibold text-[#92400E]">
+                            Gerado localmente (servidores Gemini ocupados no momento)
+                          </span>
+                        )}
+                      </div>
                       <button
                         type="button"
                         onClick={() => {
                           setAiQuoteText('');
+                          setAiQuoteMeta(null);
                           setAiQuoteError('');
                         }}
                         className="text-[11px] text-[#727784] hover:text-[#091b36] cursor-pointer"
@@ -1555,7 +1599,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                         />
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="text-[10px] text-[#727784]">
-                            Saudação adicionada localmente · Zero dados pessoais enviados à IA.
+                            {aiQuoteMeta?.sourceMode === 'local_fallback'
+                              ? 'Motor local MicroLab OS · Saudação adicionada localmente.'
+                              : aiQuoteMeta?.isFallbackModel && aiQuoteMeta.modelUsed
+                              ? `Respondido via modelo alternativo: ${aiQuoteMeta.modelUsed} · Zero PII enviado.`
+                              : 'Saudação adicionada localmente · Zero dados pessoais enviados à IA.'}
                           </span>
                           <div className="flex items-center gap-2">
                             <button
@@ -1795,7 +1843,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="font-bold text-[#0056ab] inline-flex items-center gap-1">
                             <Sparkles className="w-3.5 h-3.5" />
-                            <span>Copiloto Técnico de Bancada</span>
+                            <span>
+                              {aiCopilotResult.sourceMode === 'local_fallback'
+                                ? 'Pré-Diagnóstico Offline Cruzado (Bancada)'
+                                : 'Copiloto Técnico de Bancada'}
+                            </span>
                           </span>
                           {aiCopilotResult.resumoTecnicoOs && (
                             <button
@@ -1803,7 +1855,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                               onClick={() => {
                                 appendOrderTechnicalNotes(
                                   activeOrder.id,
-                                  `[Copiloto IA] ${aiCopilotResult.resumoTecnicoOs}`
+                                  `[${
+                                    aiCopilotResult.sourceMode === 'local_fallback'
+                                      ? 'Pré-Diagnóstico Offline'
+                                      : 'Copiloto IA'
+                                  }] ${aiCopilotResult.resumoTecnicoOs}`
                                 );
                                 setAiCopilotAppended(true);
                               }}
@@ -1844,6 +1900,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                                 <li key={idx}>{m}</li>
                               ))}
                             </ul>
+                          </div>
+                        )}
+
+                        {(aiCopilotResult.sourceMode === 'local_fallback' ||
+                          (aiCopilotResult.isFallbackModel && aiCopilotResult.modelUsed)) && (
+                          <div className="text-[10px] text-[#727784] pt-1 border-t border-[#D9E0EC]/70">
+                            {aiCopilotResult.sourceMode === 'local_fallback'
+                              ? 'Gerado localmente · Apostila + Histórico do modelo + Fonte ZK-SK150C (servidores Gemini ocupados)'
+                              : `Respondido via modelo alternativo: ${aiCopilotResult.modelUsed}`}
                           </div>
                         )}
                       </div>

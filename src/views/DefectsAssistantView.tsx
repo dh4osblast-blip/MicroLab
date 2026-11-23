@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { useLabStore } from '../store/useLabStore';
 import { ENTRY_CHECKLIST_ITEMS } from '../utils/pricing';
+import { buildLocalBenchCopilotFallback } from '../utils/preDiagnosis';
 import {
   analyzeBenchCopilot,
   BenchCopilotResult,
@@ -202,15 +203,36 @@ export const DefectsAssistantView: React.FC = () => {
   const handleRunCopilot = async () => {
     if (!activeDefect) return;
     setCopilotError('');
-    const availability = getGeminiAvailability();
-    if (!availability.available) {
-      setCopilotError(availability.message);
-      return;
-    }
-
     const linkedOrder = selectedOrderId
       ? state.orders.find((o) => o.id === Number(selectedOrderId))
       : undefined;
+
+    const runLocalFallback = () => {
+      const localRes = buildLocalBenchCopilotFallback({
+        issue: linkedOrder?.issue || activeDefect.t,
+        brand: linkedOrder?.brand,
+        model: linkedOrder?.model,
+        device: linkedOrder?.device,
+        orders: state.orders,
+        customDefects: state.cfg.defeitosExtra,
+        editingOrderId: linkedOrder?.id,
+        triage: linkedOrder?.triage,
+        powerTests: linkedOrder?.testesFonte,
+        telemetry: linkedOrder?.telemetry,
+        activeTemplate: activeDefect,
+      });
+      setCopilotResult(localRes);
+    };
+
+    const availability = getGeminiAvailability();
+    if (!availability.available) {
+      if (availability.reason === 'offline') {
+        runLocalFallback();
+        return;
+      }
+      setCopilotError(availability.message);
+      return;
+    }
 
     const checklistSummary = linkedOrder?.entryChecklist7
       ? ENTRY_CHECKLIST_ITEMS.map((item) => {
@@ -263,7 +285,11 @@ export const DefectsAssistantView: React.FC = () => {
       });
       setCopilotResult(res);
     } catch (err) {
-      setCopilotError(err instanceof Error ? err.message : 'Falha ao consultar Copiloto IA.');
+      if ((err as Error & { isTransientModelExhausted?: boolean })?.isTransientModelExhausted) {
+        runLocalFallback();
+      } else {
+        setCopilotError(err instanceof Error ? err.message : 'Falha ao consultar Copiloto IA.');
+      }
     } finally {
       setCopilotBusy(false);
     }
@@ -691,7 +717,11 @@ export const DefectsAssistantView: React.FC = () => {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="inline-flex items-center gap-1.5 font-bold text-[#0056ab]">
                     <Sparkles className="w-4 h-4" />
-                    <span>Parecer do Copiloto Técnico IA (Dados Anonimizados)</span>
+                    <span>
+                      {copilotResult.sourceMode === 'local_fallback'
+                        ? 'Pré-Diagnóstico Offline Cruzado (Bancada)'
+                        : 'Parecer do Copiloto Técnico IA (Dados Anonimizados)'}
+                    </span>
                   </span>
                   {copilotResult.resumoTecnicoOs && (
                     <button
@@ -699,8 +729,8 @@ export const DefectsAssistantView: React.FC = () => {
                       onClick={() => {
                         setObs((prev) =>
                           prev.trim()
-                            ? `${prev.trim()}\n[Copiloto IA] ${copilotResult.resumoTecnicoOs}`
-                            : `[Copiloto IA] ${copilotResult.resumoTecnicoOs}`
+                            ? `${prev.trim()}\n[Copiloto] ${copilotResult.resumoTecnicoOs}`
+                            : `[Copiloto] ${copilotResult.resumoTecnicoOs}`
                         );
                       }}
                       className="rounded-lg bg-[#0056ab] text-white px-2.5 py-1 text-[11px] font-bold hover:bg-[#1b6fd1] cursor-pointer"
@@ -739,6 +769,15 @@ export const DefectsAssistantView: React.FC = () => {
                     </ul>
                   </div>
                 </div>
+
+                {(copilotResult.sourceMode === 'local_fallback' ||
+                  (copilotResult.isFallbackModel && copilotResult.modelUsed)) && (
+                  <div className="text-[10px] text-[#727784] pt-1 border-t border-[#D9E0EC]/70">
+                    {copilotResult.sourceMode === 'local_fallback'
+                      ? 'Gerado localmente · Pré-Diagnóstico Offline (servidores Gemini ocupados ou dispositivo offline)'
+                      : `Respondido via modelo alternativo: ${copilotResult.modelUsed}`}
+                  </div>
+                )}
               </div>
             )}
           </div>

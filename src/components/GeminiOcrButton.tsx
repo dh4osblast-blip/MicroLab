@@ -78,9 +78,13 @@ export const GeminiOcrButton: React.FC<GeminiOcrButtonProps> = ({
         });
       } else {
         const hasInvalidImei = Boolean(result.imei) && result.luhn.status !== 'valid';
+        const fallbackNote =
+          result.isFallbackModel && result.modelUsed
+            ? ` · Respondido via modelo alternativo: ${result.modelUsed}`
+            : '';
         setStatusMessage({
           tone: hasInvalidImei ? 'warn' : 'ok',
-          text: `${partsSummary.join(' · ')}${result.observacao ? ` — ${result.observacao}` : ''}`,
+          text: `${partsSummary.join(' · ')}${result.observacao ? ` — ${result.observacao}` : ''}${fallbackNote}`,
         });
       }
     } catch (err) {
