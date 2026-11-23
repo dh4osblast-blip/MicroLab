@@ -13,6 +13,7 @@ import {
   Eye,
   EyeOff,
   Link2,
+  Loader2,
   Lock,
   MessageCircle,
   PackageCheck,
@@ -25,7 +26,9 @@ import {
   ShieldAlert,
   ShieldCheck,
   Smartphone,
+  Sparkles,
   Trash2,
+  WifiOff,
   Wrench,
   X,
   XCircle,
@@ -65,6 +68,7 @@ import {
 import { AndroidPatternLock, AndroidPatternMiniSvg } from '../components/AndroidPatternLock';
 import { PreDiagnosisPanel } from '../components/PreDiagnosisPanel';
 import { ImeiTriageInsight } from '../components/ImeiTriageTools';
+import { GeminiOcrButton } from '../components/GeminiOcrButton';
 import { OrderThermalReceipt, runWithThermalPrintMode } from '../components/ThermalReceiptPrint';
 import { buildElectricalCardDetails } from '../utils/preDiagnosis';
 import { APOSTILA_DEFEITOS } from './DefectsAssistantView';
@@ -74,6 +78,12 @@ import {
   publishOrderPublicAcceptance,
 } from '../services/publicAcceptance';
 import { loadAuthState } from '../services/firebaseSync';
+import {
+  analyzeBenchCopilot,
+  BenchCopilotResult,
+  getGeminiAvailability,
+  translateQuoteForCustomer,
+} from '../services/geminiByok';
 
 interface OrdersViewProps {
   selectedOrderId: number | null;
@@ -179,6 +189,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     cancelOrderWithOptions,
     deleteOrderWithAdminPin,
     deleteOrderDiagnosticReport,
+    appendOrderTechnicalNotes,
     getVolatileSecret,
   } = useLabStore();
 
@@ -193,6 +204,25 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   const [publicLinkFeedback, setPublicLinkFeedback] = useState('');
   const [publicLinkError, setPublicLinkError] = useState('');
   const [copiedPublicUrl, setCopiedPublicUrl] = useState(false);
+
+  // IA de Bancada & Tradutor de Orçamento (BYOK)
+  const [aiCopilotBusy, setAiCopilotBusy] = useState(false);
+  const [aiCopilotError, setAiCopilotError] = useState('');
+  const [aiCopilotResult, setAiCopilotResult] = useState<BenchCopilotResult | null>(null);
+  const [aiCopilotAppended, setAiCopilotAppended] = useState(false);
+  const [aiQuoteBusy, setAiQuoteBusy] = useState(false);
+  const [aiQuoteError, setAiQuoteError] = useState('');
+  const [aiQuoteText, setAiQuoteText] = useState('');
+  const [aiQuoteCopied, setAiQuoteCopied] = useState(false);
+
+  useEffect(() => {
+    setAiCopilotResult(null);
+    setAiCopilotError('');
+    setAiCopilotAppended(false);
+    setAiQuoteText('');
+    setAiQuoteError('');
+    setAiQuoteCopied(false);
+  }, [selectedOrderId]);
 
   const [viewTab, setViewTab] = useState<ViewTab>('Todas');
   const [search, setSearch] = useState('');
@@ -1033,6 +1063,122 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     return `https://wa.me/${waDigits}?text=${encodeURIComponent(msg)}`;
   };
 
+  const buildWhatsappHrefForText = (o: ServiceOrder, message: string) => {
+    const digits = (o.clientPhone || '').replace(/\D/g, '');
+    const waDigits = digits.length <= 11 && digits.length >= 8 ? `55${digits}` : digits;
+    return waDigits
+      ? `https://wa.me/${waDigits}?text=${encodeURIComponent(message)}`
+      : `https://wa.me/?text=${encodeURIComponent(message)}`;
+  };
+
+  const handleRunOrderCopilot = async (o: ServiceOrder) => {
+    setAiCopilotError('');
+    setAiCopilotAppended(false);
+    const availability = getGeminiAvailability();
+    if (!availability.available) {
+      setAiCopilotError(availability.message);
+      return;
+    }
+
+    const issueNorm = normStr(`${o.issue} ${o.notes || ''}`);
+    const matchedRoutine = APOSTILA_DEFEITOS.find((tpl) => {
+      const words = normStr(tpl.t)
+        .split(/\s+/)
+        .filter((w) => w.length >= 4 && !['defeito', 'aparelho', 'sugestao', 'apostila'].includes(w));
+      return words.some((w) => issueNorm.includes(w));
+    });
+
+    const checklistSummary = ENTRY_CHECKLIST_ITEMS.map((item) => {
+      const v = o.entryChecklist7?.[item.key];
+      const lbl = v === 's' ? 'Sim' : v === 'n' ? 'Não' : 'Não testado';
+      return `${item.label}: ${lbl}`;
+    });
+
+    const powerTestsSummary: string[] = [];
+    if (o.telemetry) {
+      powerTestsSummary.push(
+        `Telemetria: ${o.telemetry.voltage.toFixed(2)}V / ${o.telemetry.current.toFixed(3)}A / ${o.telemetry.power.toFixed(2)}W (${o.telemetry.note})`
+      );
+    }
+    if (Array.isArray(o.testesFonte)) {
+      o.testesFonte.slice(0, 5).forEach((t) => {
+        powerTestsSummary.push(
+          `Teste ${t.dt}: diag=${t.diag || '—'}, fuga=${t.fugaMa ?? '—'}mA, boot=${t.bootA ?? '—'}A, pico=${t.ipkA ?? '—'}A, vavg=${t.vavgV ?? '—'}V, prots=${(t.prots || []).join(',') || 'nenhuma'}${t.nt ? `, obs=${t.nt}` : ''}`
+        );
+      });
+    }
+
+    setAiCopilotBusy(true);
+    try {
+      const res = await analyzeBenchCopilot({
+        orderCode: o.code,
+        device: o.device,
+        brand: o.brand,
+        model: o.model,
+        issue: o.issue,
+        technicalNotes: o.notes || o.diagnosis || '',
+        entryChecklistSummary: checklistSummary,
+        safetyFlags: {
+          swollenBattery: Boolean(o.triage?.bat),
+          oxidation: Boolean(o.triage?.oxi),
+          arrivedDead: Boolean(o.triage?.apagado),
+        },
+        powerTestsSummary,
+        routineTitle: matchedRoutine?.t,
+        routineStepsSummary: matchedRoutine?.p.map((s) => s.text),
+      });
+      setAiCopilotResult(res);
+    } catch (err) {
+      setAiCopilotError(err instanceof Error ? err.message : 'Falha ao consultar Copiloto IA.');
+    } finally {
+      setAiCopilotBusy(false);
+    }
+  };
+
+  const handleTranslateOrderQuote = async (o: ServiceOrder) => {
+    setAiQuoteError('');
+    setAiQuoteCopied(false);
+    const availability = getGeminiAvailability();
+    if (!availability.available) {
+      setAiQuoteError(availability.message);
+      return;
+    }
+
+    const total = calcOrderTotalAmount(o);
+    const warrantyDays = resolveOrderWarrantyDays(o.serviceCatalogId, state.servicos, state.cfg);
+    setAiQuoteBusy(true);
+    try {
+      const translatedBody = await translateQuoteForCustomer({
+        orderCode: o.code,
+        device: o.device,
+        status: o.status,
+        issue: o.issue,
+        serviceName: o.serviceCatalogName,
+        technicalNotes: o.notes || o.diagnosis || '',
+        items: (o.extraItems || []).map((it) => ({
+          description: it.d,
+          qty: Number(it.q) || 1,
+          subtotal: Math.round((Number(it.q) || 0) * (Number(it.v) || 0) * 100) / 100,
+        })),
+        servicePrice: Number(o.servicePrice) || 0,
+        partsPrice: Number(o.partsPrice) || 0,
+        deliveryFee: Number(o.deliveryFee) || 0,
+        discount: Number(o.discount) || 0,
+        totalAmount: total,
+        paidAmount: Number(o.paidAmount) || 0,
+        warrantyDays,
+      });
+      const greeting = o.clientName?.trim()
+        ? `Olá, *${o.clientName.trim()}*!\n\n`
+        : 'Olá!\n\n';
+      setAiQuoteText(`${greeting}${translatedBody}`);
+    } catch (err) {
+      setAiQuoteError(err instanceof Error ? err.message : 'Falha ao traduzir orçamento via IA.');
+    } finally {
+      setAiQuoteBusy(false);
+    }
+  };
+
   const activeOrderTotal = activeOrder ? calcOrderTotalAmount(activeOrder) : 0;
   const activeOrderPaid = activeOrder ? Number(activeOrder.paidAmount) || 0 : 0;
   const activeOrderSaldo = Math.max(0, Math.round((activeOrderTotal - activeOrderPaid) * 100) / 100);
@@ -1347,17 +1493,106 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                         Cupom {state.cfg.thermalWidth === '58mm' ? '58mm' : '80mm'}
                       </span>
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleTranslateOrderQuote(activeOrder)}
+                      disabled={aiQuoteBusy}
+                      className="inline-flex items-center gap-1 px-2.5 py-2 rounded-lg border border-[#0056ab]/30 bg-[#EAF2FD] text-[11px] font-bold text-[#0056ab] hover:bg-[#dfe8ff] cursor-pointer disabled:opacity-60"
+                      title="Traduzir termos técnicos do orçamento para linguagem simples de WhatsApp (IA)"
+                    >
+                      {aiQuoteBusy ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      <span className="hidden sm:inline">
+                        {aiQuoteBusy ? 'Traduzindo...' : 'Traduzir p/ Cliente'}
+                      </span>
+                    </button>
                     <a
                       href={buildOrderWhatsappUrl(activeOrder)}
                       target="_blank"
                       rel="noreferrer"
                       className="p-2 rounded-lg border border-[#D9E0EC] text-[#16A34A] hover:bg-[#DCFCE7]"
-                      title="Enviar orçamento/OS no WhatsApp"
+                      title="Enviar orçamento/OS padrão no WhatsApp"
                     >
                       <MessageCircle className="w-4 h-4" />
                     </a>
                   </div>
                 </div>
+
+                {/* Tradutor de Orçamento para Linguagem do Cliente (WhatsApp IA) */}
+                {(aiQuoteError || aiQuoteText) && (
+                  <div className="rounded-xl bg-[#F3F6FB] border border-[#0056ab]/30 p-3.5 space-y-2.5 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="inline-flex items-center gap-1.5 font-bold text-[#0056ab]">
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Tradutor de Orçamento p/ Cliente (WhatsApp IA)</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAiQuoteText('');
+                          setAiQuoteError('');
+                        }}
+                        className="text-[11px] text-[#727784] hover:text-[#091b36] cursor-pointer"
+                      >
+                        Fechar
+                      </button>
+                    </div>
+                    {aiQuoteError ? (
+                      <div className="rounded-lg bg-[#FFF7E6] border border-[#D97706]/35 px-3 py-2 text-[11px] text-[#92400E] flex items-start gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 text-[#D97706] shrink-0 mt-0.5" />
+                        <span>{aiQuoteError}</span>
+                      </div>
+                    ) : (
+                      <>
+                        <textarea
+                          rows={6}
+                          value={aiQuoteText}
+                          onChange={(e) => setAiQuoteText(e.target.value)}
+                          className="w-full rounded-lg border border-[#D9E0EC] bg-white px-3 py-2 text-xs text-[#091b36] leading-relaxed focus:outline-none focus:border-[#0056ab]"
+                        />
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[10px] text-[#727784]">
+                            Saudação adicionada localmente · Zero dados pessoais enviados à IA.
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  await navigator.clipboard.writeText(aiQuoteText);
+                                  setAiQuoteCopied(true);
+                                  window.setTimeout(() => setAiQuoteCopied(false), 2500);
+                                } catch {
+                                  // ignore
+                                }
+                              }}
+                              className="inline-flex items-center gap-1 rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-[11px] font-semibold text-[#091b36] hover:bg-[#EAF2FD] cursor-pointer"
+                            >
+                              {aiQuoteCopied ? (
+                                <Check className="w-3.5 h-3.5 text-[#16A34A]" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5 text-[#0056ab]" />
+                              )}
+                              <span>{aiQuoteCopied ? 'Copiado!' : 'Copiar Mensagem'}</span>
+                            </button>
+                            <a
+                              href={buildWhatsappHrefForText(activeOrder, aiQuoteText)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 rounded-lg bg-[#16A34A] hover:bg-[#15803d] px-3 py-1.5 text-[11px] font-bold text-white"
+                            >
+                              <MessageCircle className="w-3.5 h-3.5" />
+                              <span>Enviar no WhatsApp</span>
+                            </a>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
 
                 {/* Status Stepper Selector */}
                 <div>
@@ -1525,6 +1760,95 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       Oxidação: remover periféricos e isolar microfones antes da cuba ultrassônica.
                     </div>
                   )}
+
+                  <div className="pt-1 border-t border-[#D9E0EC] space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleRunOrderCopilot(activeOrder)}
+                        disabled={aiCopilotBusy}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-[#0056ab]/35 bg-white hover:bg-[#EAF2FD] text-[#0056ab] px-2.5 py-1.5 text-[11px] font-bold cursor-pointer disabled:opacity-60"
+                      >
+                        {aiCopilotBusy ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : typeof navigator !== 'undefined' && navigator.onLine === false ? (
+                          <WifiOff className="w-3.5 h-3.5 text-[#D97706]" />
+                        ) : (
+                          <Sparkles className="w-3.5 h-3.5" />
+                        )}
+                        <span>{aiCopilotBusy ? 'Analisando...' : 'Analisar com Copiloto IA'}</span>
+                      </button>
+                      <span className="text-[10px] text-[#727784]">
+                        Somente dados técnicos (LGPD)
+                      </span>
+                    </div>
+
+                    {aiCopilotError && (
+                      <div className="rounded-lg bg-[#FFF7E6] border border-[#D97706]/35 px-2.5 py-2 text-[11px] text-[#92400E] flex items-start gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 text-[#D97706] shrink-0 mt-0.5" />
+                        <span>{aiCopilotError}</span>
+                      </div>
+                    )}
+
+                    {aiCopilotResult && (
+                      <div className="rounded-lg bg-white border border-[#0056ab]/25 p-3 space-y-2 text-[11px]">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-bold text-[#0056ab] inline-flex items-center gap-1">
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Copiloto Técnico de Bancada</span>
+                          </span>
+                          {aiCopilotResult.resumoTecnicoOs && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                appendOrderTechnicalNotes(
+                                  activeOrder.id,
+                                  `[Copiloto IA] ${aiCopilotResult.resumoTecnicoOs}`
+                                );
+                                setAiCopilotAppended(true);
+                              }}
+                              className="rounded-md bg-[#0056ab] text-white px-2 py-1 text-[10px] font-bold hover:bg-[#1b6fd1] cursor-pointer"
+                            >
+                              {aiCopilotAppended ? 'Anexado à OS ✔' : 'Anexar às Observações'}
+                            </button>
+                          )}
+                        </div>
+
+                        {aiCopilotResult.alertasSeguranca.length > 0 && (
+                          <div className="rounded bg-[#FEE2E2] px-2 py-1.5 text-[10px] text-[#991B1B] space-y-0.5">
+                            <strong className="block">Alertas de Segurança:</strong>
+                            <ul className="list-disc list-inside">
+                              {aiCopilotResult.alertasSeguranca.map((a, idx) => (
+                                <li key={idx}>{a}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {aiCopilotResult.hipotesesPrincipais.length > 0 && (
+                          <div>
+                            <strong className="text-[#091b36] block">Hipóteses principais:</strong>
+                            <ul className="list-disc list-inside text-[#414752] space-y-0.5">
+                              {aiCopilotResult.hipotesesPrincipais.map((h, idx) => (
+                                <li key={idx}>{h}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {aiCopilotResult.pontosMedicao.length > 0 && (
+                          <div>
+                            <strong className="text-[#091b36] block">Pontos de medição sugeridos:</strong>
+                            <ul className="list-disc list-inside text-[#414752] space-y-0.5">
+                              {aiCopilotResult.pontosMedicao.map((m, idx) => (
+                                <li key={idx}>{m}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Evidências Fotográficas & Modalidade de Aceite do Cliente (IndexedDB Fase 4) */}
@@ -2374,12 +2698,29 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   </div>
                 </div>
 
-                <ImeiTriageInsight
-                  imei={form.imei}
-                  orders={state.orders}
-                  excludeOrderId={form.editingId}
-                  compact
-                />
+                <div className="space-y-2">
+                  <GeminiOcrButton
+                    compact
+                    onExtracted={(res) =>
+                      setForm((p) =>
+                        p
+                          ? {
+                              ...p,
+                              brand: res.marca || p.brand,
+                              model: res.modeloComercial || p.model,
+                              imei: res.imei || p.imei,
+                            }
+                          : p
+                      )
+                    }
+                  />
+                  <ImeiTriageInsight
+                    imei={form.imei}
+                    orders={state.orders}
+                    excludeOrderId={form.editingId}
+                    compact
+                  />
+                </div>
 
                 <div>
                   <span className="block text-[10px] font-semibold text-[#414752] mb-1">Acessórios deixados</span>

@@ -3,13 +3,22 @@ import {
   AlertTriangle,
   CheckCircle2,
   ClipboardCheck,
+  Loader2,
   Plus,
   RotateCcw,
+  Sparkles,
   Trash2,
+  WifiOff,
   Wrench,
   X,
 } from 'lucide-react';
 import { useLabStore } from '../store/useLabStore';
+import { ENTRY_CHECKLIST_ITEMS } from '../utils/pricing';
+import {
+  analyzeBenchCopilot,
+  BenchCopilotResult,
+  getGeminiAvailability,
+} from '../services/geminiByok';
 
 export interface DefectStepDef {
   text: string;
@@ -185,6 +194,81 @@ export const DefectsAssistantView: React.FC = () => {
   const [newStepsText, setNewStepsText] = useState('');
   const [newError, setNewError] = useState('');
 
+  // Copiloto Técnico IA
+  const [copilotBusy, setCopilotBusy] = useState(false);
+  const [copilotError, setCopilotError] = useState('');
+  const [copilotResult, setCopilotResult] = useState<BenchCopilotResult | null>(null);
+
+  const handleRunCopilot = async () => {
+    if (!activeDefect) return;
+    setCopilotError('');
+    const availability = getGeminiAvailability();
+    if (!availability.available) {
+      setCopilotError(availability.message);
+      return;
+    }
+
+    const linkedOrder = selectedOrderId
+      ? state.orders.find((o) => o.id === Number(selectedOrderId))
+      : undefined;
+
+    const checklistSummary = linkedOrder?.entryChecklist7
+      ? ENTRY_CHECKLIST_ITEMS.map((item) => {
+          const val = linkedOrder.entryChecklist7?.[item.key];
+          const label = val === 's' ? 'Sim' : val === 'n' ? 'Não' : 'Não testado';
+          return `${item.label}: ${label}`;
+        })
+      : [];
+
+    const powerTestsSummary: string[] = [];
+    if (linkedOrder?.telemetry) {
+      powerTestsSummary.push(
+        `Telemetria: ${linkedOrder.telemetry.voltage.toFixed(2)}V / ${linkedOrder.telemetry.current.toFixed(3)}A / ${linkedOrder.telemetry.power.toFixed(2)}W (${linkedOrder.telemetry.note})`
+      );
+    }
+    if (Array.isArray(linkedOrder?.testesFonte)) {
+      linkedOrder.testesFonte.slice(0, 5).forEach((t) => {
+        powerTestsSummary.push(
+          `Teste ${t.dt}: diag=${t.diag || '—'}, fuga=${t.fugaMa ?? '—'}mA, boot=${t.bootA ?? '—'}A, pico=${t.ipkA ?? '—'}A, vavg=${t.vavgV ?? '—'}V, prots=${(t.prots || []).join(',') || 'nenhuma'}${t.nt ? `, obs=${t.nt}` : ''}`
+        );
+      });
+    }
+
+    const routineStepsSummary = activeDefect.p.map((step, idx) => {
+      const mark = stepMarks[idx] || 0;
+      const stLabel = mark === 1 ? 'OK' : mark === 2 ? 'FALHA' : 'PENDENTE';
+      return `[${stLabel}] ${step.text}`;
+    });
+
+    setCopilotBusy(true);
+    try {
+      const res = await analyzeBenchCopilot({
+        orderCode: linkedOrder?.code,
+        device: linkedOrder?.device || 'Aparelho na bancada (sem OS vinculada)',
+        brand: linkedOrder?.brand,
+        model: linkedOrder?.model,
+        issue: linkedOrder?.issue || activeDefect.t,
+        technicalNotes: obs.trim(),
+        entryChecklistSummary: checklistSummary,
+        safetyFlags: linkedOrder
+          ? {
+              swollenBattery: Boolean(linkedOrder.triage?.bat),
+              oxidation: Boolean(linkedOrder.triage?.oxi),
+              arrivedDead: Boolean(linkedOrder.triage?.apagado),
+            }
+          : undefined,
+        powerTestsSummary,
+        routineTitle: activeDefect.t,
+        routineStepsSummary,
+      });
+      setCopilotResult(res);
+    } catch (err) {
+      setCopilotError(err instanceof Error ? err.message : 'Falha ao consultar Copiloto IA.');
+    } finally {
+      setCopilotBusy(false);
+    }
+  };
+
   const allDefects = useMemo<DefectTemplate[]>(() => {
     const extras: DefectTemplate[] = (state.cfg.defeitosExtra || []).map((x) => ({
       id: x.id,
@@ -217,6 +301,8 @@ export const DefectsAssistantView: React.FC = () => {
     setConfirmUnmarkedSave(false);
     setConfirmDeleteId(null);
     setFeedback(null);
+    setCopilotResult(null);
+    setCopilotError('');
   };
 
   const handleToggleStep = (index: number) => {
@@ -565,6 +651,22 @@ export const DefectsAssistantView: React.FC = () => {
                 <span>Limpar marcas</span>
               </button>
 
+              <button
+                type="button"
+                onClick={() => void handleRunCopilot()}
+                disabled={copilotBusy}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-[#0056ab]/35 bg-[#EAF2FD] hover:bg-[#dfe8ff] text-[#0056ab] px-3.5 py-2.5 text-xs font-bold cursor-pointer disabled:opacity-60"
+              >
+                {copilotBusy ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : typeof navigator !== 'undefined' && navigator.onLine === false ? (
+                  <WifiOff className="w-3.5 h-3.5 text-[#D97706]" />
+                ) : (
+                  <Sparkles className="w-3.5 h-3.5" />
+                )}
+                <span>{copilotBusy ? 'Analisando bancada...' : 'Analisar com Copiloto IA'}</span>
+              </button>
+
               {activeDefect.isCustom && (
                 <button
                   type="button"
@@ -576,6 +678,69 @@ export const DefectsAssistantView: React.FC = () => {
                 </button>
               )}
             </div>
+
+            {copilotError && (
+              <div className="rounded-xl bg-[#FFF7E6] border border-[#D97706]/35 px-3.5 py-2.5 text-xs text-[#92400E] flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-[#D97706] shrink-0 mt-0.5" />
+                <span>{copilotError}</span>
+              </div>
+            )}
+
+            {copilotResult && (
+              <div className="rounded-xl bg-[#F3F6FB] border border-[#0056ab]/25 p-4 space-y-3 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 font-bold text-[#0056ab]">
+                    <Sparkles className="w-4 h-4" />
+                    <span>Parecer do Copiloto Técnico IA (Dados Anonimizados)</span>
+                  </span>
+                  {copilotResult.resumoTecnicoOs && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setObs((prev) =>
+                          prev.trim()
+                            ? `${prev.trim()}\n[Copiloto IA] ${copilotResult.resumoTecnicoOs}`
+                            : `[Copiloto IA] ${copilotResult.resumoTecnicoOs}`
+                        );
+                      }}
+                      className="rounded-lg bg-[#0056ab] text-white px-2.5 py-1 text-[11px] font-bold hover:bg-[#1b6fd1] cursor-pointer"
+                    >
+                      Anexar às Observações
+                    </button>
+                  )}
+                </div>
+
+                {copilotResult.alertasSeguranca.length > 0 && (
+                  <div className="rounded-lg bg-[#FEE2E2] border border-[#DC2626]/30 p-2.5 text-[#991B1B] space-y-1">
+                    <strong className="block text-[11px]">Alertas de Segurança na Bancada</strong>
+                    <ul className="list-disc list-inside space-y-0.5 text-[11px]">
+                      {copilotResult.alertasSeguranca.map((a, i) => (
+                        <li key={i}>{a}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="rounded-lg bg-white border border-[#D9E0EC] p-3 space-y-1">
+                    <strong className="block text-[11px] text-[#091b36]">Hipóteses Principais</strong>
+                    <ul className="list-disc list-inside space-y-1 text-[11px] text-[#414752]">
+                      {copilotResult.hipotesesPrincipais.map((h, i) => (
+                        <li key={i}>{h}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="rounded-lg bg-white border border-[#D9E0EC] p-3 space-y-1">
+                    <strong className="block text-[11px] text-[#091b36]">Pontos de Medição Sugeridos</strong>
+                    <ul className="list-disc list-inside space-y-1 text-[11px] text-[#414752]">
+                      {copilotResult.pontosMedicao.map((m, i) => (
+                        <li key={i}>{m}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

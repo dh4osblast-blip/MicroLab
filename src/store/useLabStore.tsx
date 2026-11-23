@@ -840,6 +840,7 @@ interface LabContextValue {
   upsertOrderPowerTest: (targetOrderId: number | null, testEntry: PowerSupplyTestEntry) => void;
   addOrderDiagnosticReport: (orderId: number, report: Omit<OrderDiagnosticReport, 'id'>) => void;
   deleteOrderDiagnosticReport: (orderId: number, reportId: string) => void;
+  appendOrderTechnicalNotes: (orderId: number, noteText: string) => void;
   addCustomDefect: (title: string, steps: string[]) => CustomDefectItem | null;
   deleteCustomDefect: (id: string) => void;
   setTempCalibration: (id: string, value: string) => void;
@@ -2209,6 +2210,25 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return {
           ...o,
           laudos: filtered,
+          updatedAt: Date.now(),
+        };
+      }),
+    }));
+    scheduleCloudSync(2500);
+  };
+
+  const appendOrderTechnicalNotes = (orderId: number, noteText: string) => {
+    const clean = String(noteText || '').trim();
+    if (!clean) return;
+    setState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((o) => {
+        if (o.id !== orderId) return o;
+        const base = (o.notes || '').trim();
+        const nextNotes = base ? `${base}\n${clean}` : clean;
+        return {
+          ...o,
+          notes: nextNotes,
           updatedAt: Date.now(),
         };
       }),
@@ -3775,6 +3795,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         upsertOrderPowerTest,
         addOrderDiagnosticReport,
         deleteOrderDiagnosticReport,
+        appendOrderTechnicalNotes,
         addCustomDefect,
         deleteCustomDefect,
         setTempCalibration,

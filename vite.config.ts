@@ -51,11 +51,12 @@ export default defineConfig(() => {
         workbox: {
           cacheId: 'microlab-os-v1-prod',
           cleanupOutdatedCaches: true,
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           navigateFallbackDenylist: [/^\/api/],
           runtimeCaching: [
             {
-              urlPattern: /^https:\/\/(firestore|identitytoolkit|securetoken)\.googleapis\.com\/.*/i,
+              urlPattern: /^https:\/\/(firestore|identitytoolkit|securetoken|generativelanguage)\.googleapis\.com\/.*/i,
               handler: 'NetworkOnly',
             },
             {

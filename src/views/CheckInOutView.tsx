@@ -26,6 +26,7 @@ import {
 import { AndroidPatternLock } from '../components/AndroidPatternLock';
 import { PreDiagnosisPanel } from '../components/PreDiagnosisPanel';
 import { ImeiTriageInsight } from '../components/ImeiTriageTools';
+import { GeminiOcrButton } from '../components/GeminiOcrButton';
 import { compressEvidenceImage } from '../services/mediaStore';
 
 interface CheckInOutViewProps {
@@ -603,7 +604,24 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
                 </div>
               </div>
 
-              <ImeiTriageInsight imei={imei} orders={state.orders} compact />
+              <div className="space-y-2">
+                <GeminiOcrButton
+                  compact
+                  onExtracted={(res) => {
+                    const m = res.marca.trim();
+                    const mod = res.modeloComercial.trim();
+                    const combined =
+                      m && mod
+                        ? mod.toLowerCase().startsWith(m.toLowerCase())
+                          ? mod
+                          : `${m} ${mod}`
+                        : mod || m;
+                    if (combined) setDevice(combined);
+                    if (res.imei) setImei(res.imei);
+                  }}
+                />
+                <ImeiTriageInsight imei={imei} orders={state.orders} compact />
+              </div>
 
               <div className="rounded-xl bg-[#FFF7E6] border border-[#D97706]/25 px-3 py-2 flex items-start gap-2 text-[11px] text-[#414752]">
                 <ShieldAlert className="w-4 h-4 text-[#D97706] shrink-0 mt-0.5" />

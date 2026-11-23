@@ -8,8 +8,11 @@ import {
   Database,
   Download,
   Edit3,
+  Eye,
+  EyeOff,
   FileText,
   KeyRound,
+  Loader2,
   Lock,
   LogOut,
   MapPin,
@@ -20,6 +23,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sliders,
+  Sparkles,
   Trash2,
   Upload,
   UserPlus,
@@ -39,6 +43,13 @@ import {
 import { USER_ROLES } from '../utils/auth';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { PWAInstallButton } from '../components/PWAComponents';
+import {
+  GEMINI_BYOK_STORAGE_KEY,
+  getGeminiByokKey,
+  removeGeminiByokKey,
+  saveGeminiByokKey,
+  testGeminiByokKey,
+} from '../services/geminiByok';
 
 const DOW_SHORT = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'] as const;
 
@@ -325,6 +336,58 @@ export const SettingsView: React.FC = () => {
   const [techSigError, setTechSigError] = useState('');
   const [techSigFeedback, setTechSigFeedback] = useState('');
   const [removeWhiteBgOnSig, setRemoveWhiteBgOnSig] = useState(true);
+
+  // IA de Bancada · Google Gemini (BYOK — Local Only)
+  const [geminiKeyInput, setGeminiKeyInput] = useState(() => getGeminiByokKey());
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const [geminiHasSavedKey, setGeminiHasSavedKey] = useState(() => Boolean(getGeminiByokKey()));
+  const [geminiTesting, setGeminiTesting] = useState(false);
+  const [geminiFeedback, setGeminiFeedback] = useState('');
+  const [geminiError, setGeminiError] = useState('');
+
+  const handleSaveGeminiKey = (e: React.FormEvent) => {
+    e.preventDefault();
+    setGeminiFeedback('');
+    setGeminiError('');
+    const trimmed = geminiKeyInput.trim();
+    if (!trimmed) {
+      setGeminiError('Informe uma chave API do Google AI Studio antes de salvar.');
+      return;
+    }
+    saveGeminiByokKey(trimmed);
+    setGeminiKeyInput(trimmed);
+    setGeminiHasSavedKey(true);
+    setGeminiFeedback('Chave Gemini (BYOK) salva exclusivamente neste navegador.');
+  };
+
+  const handleTestGeminiKey = async () => {
+    setGeminiFeedback('');
+    setGeminiError('');
+    const candidate = geminiKeyInput.trim() || getGeminiByokKey();
+    if (!candidate) {
+      setGeminiError('Cole ou salve uma chave API Gemini antes de testar.');
+      return;
+    }
+    setGeminiTesting(true);
+    const res = await testGeminiByokKey(candidate);
+    setGeminiTesting(false);
+    if (res.ok) {
+      saveGeminiByokKey(candidate);
+      setGeminiKeyInput(candidate);
+      setGeminiHasSavedKey(true);
+      setGeminiFeedback(res.message);
+    } else {
+      setGeminiError(res.message);
+    }
+  };
+
+  const handleRemoveGeminiKey = () => {
+    removeGeminiByokKey();
+    setGeminiKeyInput('');
+    setGeminiHasSavedKey(false);
+    setGeminiError('');
+    setGeminiFeedback('Chave Gemini (BYOK) removida deste dispositivo.');
+  };
 
   const handleSaveFirebaseConfig = (e: React.FormEvent) => {
     e.preventDefault();
@@ -2446,6 +2509,129 @@ export const SettingsView: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* IA de Bancada · Google Gemini (BYOK — Exclusivo Administrador, Local Only) */}
+      {currentUser?.nivel === 'Administrador' && (
+        <div className="rounded-2xl bg-white p-5 border border-[#D9E0EC] space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-[#EAF2FD] border border-[#0056ab]/25 flex items-center justify-center shrink-0">
+                <Sparkles className="w-4 h-4 text-[#0056ab]" />
+              </div>
+              <div>
+                <h2 className="text-sm font-bold text-[#091b36]">IA de Bancada · Google Gemini (BYOK)</h2>
+                <p className="text-[11px] text-[#727784]">
+                  Habilita OCR de etiquetas/IMEI, Copiloto Técnico de Bancada e Tradutor de Orçamento para WhatsApp
+                </p>
+              </div>
+            </div>
+            <span
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold shrink-0 ${
+                !isOnline
+                  ? 'bg-[#FFF7E6] text-[#D97706]'
+                  : geminiHasSavedKey
+                  ? 'bg-[#DCFCE7] text-[#16A34A]'
+                  : 'bg-[#F3F6FB] text-[#727784]'
+              }`}
+            >
+              {!isOnline
+                ? 'Offline (IA pausada)'
+                : geminiHasSavedKey
+                ? 'Chave BYOK ativa neste aparelho'
+                : 'Não configurada'}
+            </span>
+          </div>
+
+          <div className="rounded-xl bg-[#FFF7E6] border border-[#D97706]/30 px-3.5 py-2.5 text-[11px] text-[#92400E] flex items-start gap-2">
+            <Lock className="w-4 h-4 text-[#D97706] shrink-0 mt-0.5" />
+            <span>
+              <strong>Isolamento Total de Segurança:</strong> Sua chave BYOK fica salva{' '}
+              <strong>apenas neste navegador</strong> (<code className="font-mono">{GEMINI_BYOK_STORAGE_KEY}</code>).
+              Ela <strong>nunca</strong> é enviada ao Firebase Firestore, nunca entra no backup JSON e não é visível para outros perfis.
+            </span>
+          </div>
+
+          {geminiError && (
+            <div className="rounded-xl bg-[#FEE2E2] border border-[#DC2626]/30 px-3.5 py-2.5 text-xs text-[#DC2626] flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{geminiError}</span>
+            </div>
+          )}
+
+          {geminiFeedback && (
+            <div className="rounded-xl bg-[#DCFCE7] border border-[#16A34A]/30 px-3.5 py-2.5 text-xs text-[#16A34A] font-medium flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              <span>{geminiFeedback}</span>
+            </div>
+          )}
+
+          <form
+            onSubmit={handleSaveGeminiKey}
+            className="rounded-xl bg-[#F3F6FB] p-4 border border-[#D9E0EC] space-y-3"
+          >
+            <div>
+              <label className="block text-[11px] font-semibold text-[#414752] mb-1">
+                Chave API Google Gemini (Google AI Studio)
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type={showGeminiKey ? 'text' : 'password'}
+                  autoComplete="off"
+                  value={geminiKeyInput}
+                  onChange={(e) => setGeminiKeyInput(e.target.value)}
+                  placeholder="AIzaSy..."
+                  className="flex-1 rounded-xl border border-[#D9E0EC] bg-white px-3 py-2 text-xs font-mono text-[#091b36] focus:border-[#0056ab] focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowGeminiKey((v) => !v)}
+                  className="inline-flex items-center gap-1 rounded-xl border border-[#D9E0EC] bg-white px-3 py-2 text-xs font-semibold text-[#414752] hover:bg-[#EAF2FD] cursor-pointer shrink-0"
+                >
+                  {showGeminiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  <span>{showGeminiKey ? 'Ocultar' : 'Mostrar'}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] text-[#727784]">
+                Modelo padrão: <code className="font-mono">gemini-2.5-flash</code> · Somente dados técnicos anonimizados (LGPD).
+              </span>
+              <div className="flex flex-wrap items-center gap-2">
+                {geminiHasSavedKey && (
+                  <button
+                    type="button"
+                    onClick={handleRemoveGeminiKey}
+                    className="inline-flex items-center gap-1 rounded-xl border border-[#DC2626]/30 bg-white px-3 py-2 text-xs font-semibold text-[#DC2626] hover:bg-[#FEE2E2] cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Remover Chave</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  disabled={geminiTesting || !isOnline}
+                  onClick={() => void handleTestGeminiKey()}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[#0056ab]/35 bg-white px-3.5 py-2 text-xs font-semibold text-[#0056ab] hover:bg-[#EAF2FD] disabled:opacity-50 cursor-pointer"
+                >
+                  {geminiTesting ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-3.5 h-3.5" />
+                  )}
+                  <span>{geminiTesting ? 'Testando...' : 'Testar Chave'}</span>
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-xl bg-[#0056ab] px-4 py-2 text-xs font-semibold text-white hover:bg-[#1b6fd1] cursor-pointer"
+                >
+                  Salvar Chave
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* Firebase Auth + Firestore Cloud Sync Card */}
       <div className="rounded-2xl bg-white p-5 border border-[#D9E0EC] space-y-4">
