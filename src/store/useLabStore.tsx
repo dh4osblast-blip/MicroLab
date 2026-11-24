@@ -86,8 +86,11 @@ import {
 import {
   FirebaseAuthState,
   LEGACY_DB_KEY,
+  PendingSyncDetail,
   SyncStatus,
   authenticateFirebaseEmailPassword,
+  detalhesPendentes as buildPendingSyncDetails,
+  discardPendingSyncKey,
   emptySyncMetadata,
   formatFirebaseSyncError,
   getDbStorageKey,
@@ -832,6 +835,8 @@ interface LabContextValue {
   confirmAccountSwitch: (confirm: boolean) => void;
   signOutCloud: () => void;
   syncNow: () => Promise<boolean>;
+  detalhesPendentes: () => PendingSyncDetail[];
+  descartarPendencia: (chave: string) => void;
   exportBackupJson: () => string;
   importBackupJson: (jsonText: string) => { ok: boolean; error?: string };
   factoryResetLocalDb: () => void;
@@ -870,8 +875,8 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [syncError, setSyncError] = useState('');
   const [syncWarning, setSyncWarning] = useState('');
   const [lastSyncAt, setLastSyncAt] = useState<number>(() => loadSyncMetadata(loadAuthState().uid).lastSyncAt || 0);
-  const [pendingCount, setPendingCount] = useState<number>(() =>
-    Object.keys(loadSyncMetadata(loadAuthState().uid).dirty).length
+  const [pendingKeys, setPendingKeys] = useState<string[]>(() =>
+    Object.keys(loadSyncMetadata(loadAuthState().uid).dirty)
   );
 
   const stateRef = useRef(state);
@@ -897,7 +902,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {
       // Ignore quota errors
     }
-    setPendingCount(Object.keys(stamped.meta.dirty).length);
+    setPendingKeys(Object.keys(stamped.meta.dirty));
   }, [state, auth.uid]);
 
   const executeCloudSync = useCallback(async (): Promise<boolean> => {
@@ -921,7 +926,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       authRef.current = res.auth;
       setAuth(res.auth);
       setLastSyncAt(res.meta.lastSyncAt);
-      setPendingCount(Object.keys(res.meta.dirty).length);
+      setPendingKeys(Object.keys(res.meta.dirty));
       setSyncWarning(res.warning);
       if (res.changed) {
         const fixedRes = applyDueFixedExpenses(hydrateLabState(res.state));
@@ -1617,7 +1622,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (metaDirtyChanged) {
       saveSyncMetadata(activeUid, syncMeta);
-      setPendingCount(Object.keys(syncMeta.dirty).length);
+      setPendingKeys(Object.keys(syncMeta.dirty));
     }
 
     const nextChannel =
@@ -2071,7 +2076,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           syncMeta.dirty[`media/${mid}`] = 1;
         });
         saveSyncMetadata(activeUid, syncMeta);
-        setPendingCount(Object.keys(syncMeta.dirty).length);
+        setPendingKeys(Object.keys(syncMeta.dirty));
       }
     }
 
@@ -3505,7 +3510,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setAuth(nextAuth);
     if (projectChanged) {
       setState(loadStateForUid(''));
-      setPendingCount(Object.keys(loadSyncMetadata('').dirty).length);
+      setPendingKeys(Object.keys(loadSyncMetadata('').dirty));
       setLastSyncAt(0);
     }
     setSyncError('');
@@ -3529,7 +3534,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSyncWarning('');
     setLastSyncAt(0);
     setState(loadStateForUid(''));
-    setPendingCount(0);
+    setPendingKeys([]);
   };
 
   const commitAccountActivation = useCallback(
@@ -3549,7 +3554,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCurrentUser(null);
       setPowerSupplyStatusState({ connected: false, outputOn: false });
       setLastSyncAt(isolatedMeta.lastSyncAt || 0);
-      setPendingCount(Object.keys(isolatedMeta.dirty).length);
+      setPendingKeys(Object.keys(isolatedMeta.dirty));
       setSyncError('');
       // Agenda sincronização imediata para a nova conta
       window.setTimeout(() => {
@@ -3630,7 +3635,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCurrentUser(null);
     setPowerSupplyStatusState({ connected: false, outputOn: false });
     setLastSyncAt(0);
-    setPendingCount(Object.keys(loadSyncMetadata('').dirty).length);
+    setPendingKeys(Object.keys(loadSyncMetadata('').dirty));
   };
 
   const syncNow = async (): Promise<boolean> => {
@@ -3645,6 +3650,17 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }));
     return true;
   };
+
+  const detalhesPendentes = useCallback(
+    (): PendingSyncDetail[] => buildPendingSyncDetails(state, pendingKeys),
+    [state, pendingKeys]
+  );
+
+  const descartarPendencia = useCallback((chave: string) => {
+    const uid = authRef.current.uid || '';
+    const nextMeta = discardPendingSyncKey(uid, chave);
+    setPendingKeys(Object.keys(nextMeta.dirty));
+  }, []);
 
   const exportBackupJson = (): string => {
     // LGPD: Garante que nenhuma senha ou padrão de desbloqueio entra no backup JSON
@@ -3662,7 +3678,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       saveSyncMetadata(uid, emptySyncMetadata(uid));
       const clean = applyDueFixedExpenses(hydrateLabState(parsed, uid)).state;
       setState(clean);
-      setPendingCount(Object.keys(loadSyncMetadata(uid).dirty).length);
+      setPendingKeys(Object.keys(loadSyncMetadata(uid).dirty));
       setVolatileSecrets({});
       return { ok: true };
     } catch {
@@ -3679,7 +3695,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     void clearMediaForUid(uid);
     saveSyncMetadata(uid, emptySyncMetadata(uid));
     setVolatileSecrets({});
-    setPendingCount(0);
+    setPendingKeys([]);
     setLastSyncAt(0);
     setPowerSupplyStatusState({ connected: false, outputOn: false });
     setCurrentUser(null);
@@ -3694,7 +3710,8 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     storageKey: getDbStorageKey(auth.uid),
     busy: syncBusy,
     lastSyncAt,
-    pendingCount,
+    pendingCount: pendingKeys.length,
+    chaves: pendingKeys,
     error: syncError,
     warning: syncWarning,
   };
@@ -3787,6 +3804,8 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         confirmAccountSwitch,
         signOutCloud,
         syncNow,
+        detalhesPendentes,
+        descartarPendencia,
         exportBackupJson,
         importBackupJson,
         factoryResetLocalDb,

@@ -43,6 +43,7 @@ import {
 import { USER_ROLES } from '../utils/auth';
 import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import { PWAInstallButton } from '../components/PWAComponents';
+import { PendingSyncModal } from '../components/PendingSyncModal';
 import {
   GEMINI_BYOK_STORAGE_KEY,
   GEMINI_MODEL_ID,
@@ -271,6 +272,7 @@ export const SettingsView: React.FC = () => {
   const [configFeedback, setConfigFeedback] = useState('');
   const [configError, setConfigError] = useState('');
   const [confirmClearConfig, setConfirmClearConfig] = useState(false);
+  const [pendingModalOpen, setPendingModalOpen] = useState(false);
 
   const [emailInput, setEmailInput] = useState(syncStatus.email || '');
   const [passwordInput, setPasswordInput] = useState('');
@@ -763,12 +765,22 @@ export const SettingsView: React.FC = () => {
             <span className="text-[#727784] block text-[11px]">Última Sincronização</span>
             <strong className="text-[#091b36] block mt-0.5">{state.labProfile.lastSync}</strong>
           </div>
-          <div className="rounded-xl bg-[#F3F6FB] p-3 border border-[#D9E0EC]">
-            <span className="text-[#727784] block text-[11px]">Alterações Pendentes / Registros</span>
+          <button
+            type="button"
+            onClick={() => setPendingModalOpen(true)}
+            title="Clique para inspecionar alterações pendentes de sincronização"
+            className="rounded-xl bg-[#F3F6FB] hover:bg-[#EAF2FD] p-3 border border-[#D9E0EC] hover:border-[#0056ab]/40 text-left transition-colors cursor-pointer group"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[#727784] block text-[11px]">Alterações Pendentes / Registros</span>
+              <span className="text-[10px] font-bold text-[#0056ab] group-hover:underline">
+                Ver fila
+              </span>
+            </div>
             <strong className="text-[#091b36] tabular-nums block mt-0.5">
               {syncStatus.pendingCount} pend. · {state.orders.length} OS · {state.parts.length} Peças
             </strong>
-          </div>
+          </button>
         </div>
       </div>
 
@@ -3016,6 +3028,8 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
       )}
+
+      <PendingSyncModal open={pendingModalOpen} onClose={() => setPendingModalOpen(false)} />
 
       <footer className="pt-2 pb-4 text-center text-[11px] text-[#727784] border-t border-[#D9E0EC]/70">
         <span>MicroLab OS</span>

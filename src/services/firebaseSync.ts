@@ -52,8 +52,16 @@ export interface SyncStatus {
   busy: boolean;
   lastSyncAt: number;
   pendingCount: number;
+  chaves: string[];
   error: string;
   warning: string;
+}
+
+export interface PendingSyncDetail {
+  chave: string;
+  tipo: string;
+  titulo: string;
+  acao: string;
 }
 
 export interface AccountSwitchCheck {
@@ -187,6 +195,422 @@ export function saveSyncMetadata(uid: string | null | undefined, meta: SyncMetad
   } catch {
     // Ignore quota errors
   }
+}
+
+export function discardPendingSyncKey(
+  uid: string | null | undefined,
+  chave: string
+): SyncMetadata {
+  const meta = loadSyncMetadata(uid);
+  delete meta.dirty[chave];
+  saveSyncMetadata(uid, meta);
+  return meta;
+}
+
+const MEDIA_SLOT_LABELS: Record<string, string> = {
+  front: 'Foto Frontal',
+  back: 'Foto Traseira',
+  rails: 'Foto Laterais',
+  dock: 'Foto Conector',
+  clientSig: 'Assinatura do Cliente',
+};
+
+export function detalhesPendentes(
+  state: LabState,
+  dirtyOrKeys: Record<string, 1> | string[]
+): PendingSyncDetail[] {
+  const chaves = Array.isArray(dirtyOrKeys)
+    ? dirtyOrKeys
+    : Object.keys(dirtyOrKeys || {});
+
+  return chaves.map((chave) => {
+    const slash = chave.indexOf('/');
+    const col = slash >= 0 ? chave.slice(0, slash) : chave;
+    const id = slash >= 0 ? chave.slice(slash + 1) : '';
+
+    if (col === 'orders' || col === 'os') {
+      const os = (state.orders || []).find((o) => String(o.id) === id);
+      if (os) {
+        const legacyOs = os as unknown as { n?: number | string; apar?: string; modelo?: string };
+        const num = os.code
+          ? os.code.startsWith('#')
+            ? os.code
+            : `#${os.code}`
+          : `#${legacyOs.n ?? os.id}`;
+        const apar = os.device || os.model || legacyOs.apar || legacyOs.modelo || 'Aparelho';
+        return {
+          chave,
+          tipo: 'Ordem de Serviço',
+          titulo: `OS ${num} · ${apar}`,
+          acao: 'Salvar/Atualizar',
+        };
+      }
+      return {
+        chave,
+        tipo: 'Ordem de Serviço',
+        titulo: `OS (ID ${id.slice(0, 6)})`,
+        acao: 'Exclusão pendente',
+      };
+    }
+
+    if (col === 'parts' || col === 'produtos') {
+      const item = (state.parts || []).find((p) => String(p.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Produto / Peça',
+            titulo: item.name || item.sku || `Peça (${id.slice(0, 6)})`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Produto / Peça',
+            titulo: `Peça (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'clients' || col === 'clientes') {
+      const item = (state.clients || []).find((c) => String(c.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Cliente',
+            titulo: item.name || `Cliente (${id.slice(0, 6)})`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Cliente',
+            titulo: `Cliente (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'suppliers' || col === 'fornecedores') {
+      const item = (state.suppliers || []).find((s) => String(s.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Fornecedor',
+            titulo: item.name || `Fornecedor (${id.slice(0, 6)})`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Fornecedor',
+            titulo: `Fornecedor (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'tecnicos') {
+      const item = (state.tecnicos || []).find((t) => String(t.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Técnico',
+            titulo: item.nome || `Técnico (${id.slice(0, 6)})`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Técnico',
+            titulo: `Técnico (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'vendedores') {
+      const item = (state.vendedores || []).find((v) => String(v.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Vendedor',
+            titulo: item.nome || `Vendedor (${id.slice(0, 6)})`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Vendedor',
+            titulo: `Vendedor (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'fixos') {
+      const item = (state.fixos || []).find((f) => String(f.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Despesa Fixa',
+            titulo: item.nome || `Despesa (${id.slice(0, 6)})`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Despesa Fixa',
+            titulo: `Despesa Fixa (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'servicos') {
+      const item = (state.servicos || []).find((s) => String(s.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Serviço',
+            titulo: item.nome || `Serviço (${id.slice(0, 6)})`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Serviço',
+            titulo: `Serviço (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'vendas') {
+      const item = (state.vendas || []).find((v) => String(v.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Venda PDV',
+            titulo: `Venda #${item.n}${item.cliNome ? ` · ${item.cliNome}` : ''}`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Venda PDV',
+            titulo: `Venda (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'compras') {
+      const item = (state.compras || []).find((c) => String(c.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Compra',
+            titulo: `Pedido de Compra #${item.n}`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Compra',
+            titulo: `Pedido de Compra (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'transactions' || col === 'fin') {
+      const item = (state.transactions || []).find((t) => String(t.id) === id);
+      if (item) {
+        const legacyFin = item as unknown as { d?: string };
+        return {
+          chave,
+          tipo: 'Financeiro',
+          titulo: `Financeiro · ${item.title || legacyFin.d || 'Lançamento'}`,
+          acao: 'Salvar/Atualizar',
+        };
+      }
+      return {
+        chave,
+        tipo: 'Financeiro',
+        titulo: `Financeiro (ID ${id.slice(0, 6)})`,
+        acao: 'Exclusão pendente',
+      };
+    }
+
+    if (col === 'contasPagar') {
+      const item = (state.contasPagar || []).find((c) => String(c.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Contas a Pagar',
+            titulo: item.descricao || `Conta (${id.slice(0, 6)})`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Contas a Pagar',
+            titulo: `Conta a Pagar (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'warranties') {
+      const item = (state.warranties || []).find((w) => String(w.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Garantia',
+            titulo: `${item.code} · ${item.device || 'Aparelho'}`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Garantia',
+            titulo: `Garantia (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'shipments') {
+      const item = (state.shipments || []).find((s) => String(s.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Rastreamento',
+            titulo: item.title || item.trackingCode || `Envio (${id.slice(0, 6)})`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Rastreamento',
+            titulo: `Envio (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'scheduleDays') {
+      const item = (state.scheduleDays || []).find((d) => String(d.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Agenda de Bancada',
+            titulo: `Agenda · ${item.label || item.shortName || id}`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Agenda de Bancada',
+            titulo: `Agenda (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'priorityQueue') {
+      const item = (state.priorityQueue || []).find((q) => String(q.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Fila de Prioridade',
+            titulo: `${item.osCode} · ${item.title}`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Fila de Prioridade',
+            titulo: `Fila (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'users') {
+      const item = (state.users || []).find((u) => String(u.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Usuário',
+            titulo: `${item.nome} (${item.nivel})`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Usuário',
+            titulo: `Usuário (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'fonteMem') {
+      const item = (state.fonteMem || []).find((f) => String(f.id) === id);
+      return item
+        ? {
+            chave,
+            tipo: 'Fonte ZK-SK150C',
+            titulo: `${item.nome} (${item.v}V / ${item.i}A)`,
+            acao: 'Salvar/Atualizar',
+          }
+        : {
+            chave,
+            tipo: 'Fonte ZK-SK150C',
+            titulo: `Memória Fonte (ID ${id.slice(0, 6)})`,
+            acao: 'Exclusão pendente',
+          };
+    }
+
+    if (col === 'media') {
+      const match = id.match(/^os-(\d+)-([a-zA-Z]+)$/);
+      const linkedOrder = (state.orders || []).find(
+        (o) =>
+          o.clientSignatureMediaId === id ||
+          Object.values(o.evidenceMediaIds || {}).includes(id)
+      );
+      if (linkedOrder) {
+        const slotKey = match?.[2] || '';
+        const slotLabel = MEDIA_SLOT_LABELS[slotKey] || 'Mídia';
+        return {
+          chave,
+          tipo: 'Mídia (OS)',
+          titulo: `OS ${linkedOrder.code} · ${slotLabel}`,
+          acao: 'Salvar/Atualizar',
+        };
+      }
+      if (match) {
+        const slotLabel = MEDIA_SLOT_LABELS[match[2]] || 'Mídia';
+        return {
+          chave,
+          tipo: 'Mídia (OS)',
+          titulo: `OS #${match[1]} · ${slotLabel}`,
+          acao: 'Exclusão pendente',
+        };
+      }
+      return {
+        chave,
+        tipo: 'Mídia (OS)',
+        titulo: `Mídia (${id.slice(0, 12)})`,
+        acao: 'Salvar/Atualizar',
+      };
+    }
+
+    if (col === 'cfg') {
+      return {
+        chave,
+        tipo: 'Configuração',
+        titulo: `Configuração · ${id}`,
+        acao: 'Ajuste de parâmetro',
+      };
+    }
+
+    if (col === 'cnt') {
+      const counterMap: Record<string, string> = {
+        no: 'Contador de OS',
+        nextOrderNumber: 'Contador de OS',
+        nv: 'Contador de Vendas',
+        nextSaleNumber: 'Contador de Vendas',
+        nc: 'Contador de Compras',
+        nextPurchaseNumber: 'Contador de Compras',
+      };
+      return {
+        chave,
+        tipo: 'Contador',
+        titulo: counterMap[id] || `Contador · ${id}`,
+        acao: 'Salvar/Atualizar',
+      };
+    }
+
+    return {
+      chave,
+      tipo: col || 'Registro',
+      titulo: id ? `${col} (${id.slice(0, 8)})` : chave,
+      acao: 'Salvar/Atualizar',
+    };
+  });
 }
 
 export function parseFirebaseConfigText(input: string): { apiKey: string; projectId: string } {

@@ -82,6 +82,7 @@ import {
   analyzeBenchCopilot,
   BenchCopilotResult,
   getGeminiAvailability,
+  sanitizeWhatsAppBoldFormatting,
   translateQuoteForCustomer,
 } from '../services/geminiByok';
 
@@ -1199,10 +1200,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         paidAmount: Number(o.paidAmount) || 0,
         warrantyDays,
       });
-      const greeting = o.clientName?.trim()
-        ? `Olá, *${o.clientName.trim()}*!\n\n`
+      const clientRecord = o.clientId
+        ? state.clients.find((c) => c.id === o.clientId)
+        : undefined;
+      const resolvedClientName = (o.clientName || clientRecord?.name || '').trim();
+      const greeting = resolvedClientName
+        ? `Olá, *${resolvedClientName}*!\n\n`
         : 'Olá!\n\n';
-      setAiQuoteText(`${greeting}${res.bodyText}`);
+      const sanitizedBody = sanitizeWhatsAppBoldFormatting(res.bodyText);
+      setAiQuoteText(`${greeting}${sanitizedBody}`);
       setAiQuoteMeta({
         sourceMode: res.sourceMode,
         modelUsed: res.modelUsed,
@@ -1627,7 +1633,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                               <span>{aiQuoteCopied ? 'Copiado!' : 'Copiar Mensagem'}</span>
                             </button>
                             <a
-                              href={buildWhatsappHrefForText(activeOrder, aiQuoteText)}
+                              href={buildWhatsappHrefForText(
+                                activeOrder,
+                                sanitizeWhatsAppBoldFormatting(aiQuoteText)
+                              )}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="inline-flex items-center gap-1 rounded-lg bg-[#16A34A] hover:bg-[#15803d] px-3 py-1.5 text-[11px] font-bold text-white"

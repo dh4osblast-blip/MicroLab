@@ -703,6 +703,10 @@ function simplifyTechnicalJargonForClient(
   return (serviceName || issue || 'avaliação e reparo técnico do equipamento').trim();
 }
 
+export function sanitizeWhatsAppBoldFormatting(text: string): string {
+  return String(text || '').replace(/\*\*(.+?)\*\*/g, '*$1*');
+}
+
 /**
  * Motor local determinístico do MicroLab OS para traduzir orçamento quando todos os modelos Gemini estão indisponíveis (503/429/404).
  */
@@ -765,7 +769,7 @@ export function buildLocalQuoteTranslationFallback(
   lines.push('Qualquer dúvida ou para confirmar a execução, basta responder esta mensagem!');
 
   return {
-    bodyText: lines.join('\n'),
+    bodyText: sanitizeWhatsAppBoldFormatting(lines.join('\n')),
     sourceMode: 'local_fallback',
   };
 }
@@ -809,7 +813,7 @@ export async function translateQuoteForCustomer(
       ai.models.generateContent({
         model,
         contents: [
-          'Transforme os dados técnicos abaixo no corpo de uma mensagem cordial e clara para WhatsApp (sem saudação inicial com nome do cliente, pois o sistema adicionará o nome localmente):',
+          'Transforme os dados técnicos abaixo no corpo de uma mensagem cordial e clara para WhatsApp (sem saudação inicial com nome de pessoa, pois o sistema adicionará o nome do cliente localmente):',
           JSON.stringify(payload, null, 2),
         ].join('\n'),
         config: {
@@ -817,9 +821,9 @@ export async function translateQuoteForCustomer(
             'Você é o atendente técnico cordial da MicroLab Assistência Técnica.',
             'Sua tarefa é traduzir termos técnicos de bancada (ex.: reballing PMIC, oxidação na malha VBUS, troca de FPC, condução reversa, curto em linha primária, troca de módulo) para uma explicação simples, transparente e fácil de entender por qualquer cliente leigo no WhatsApp.',
             'Regras obrigatórias:',
-            '1. NÃO inclua saudação com nome de pessoa (o sistema vai prefixar localmente). Comece direto informando sobre a OS e o aparelho.',
+            '1. NÃO inclua saudação com nome de pessoa (nem do cliente, nem do técnico — o sistema prefixará localmente com o nome do cliente da OS). Comece direto informando sobre a OS e o aparelho.',
             '2. Explique de forma acessível o que foi identificado e o que será feito no reparo.',
-            '3. Informe claramente os valores (Total em R$, eventual desconto/entrega/sinal pago e saldo restante). Use formatação amigável de WhatsApp (*negrito* moderado).',
+            '3. Informe claramente os valores (Total em R$, eventual desconto/entrega/sinal pago e saldo restante). Use APENAS formatação nativa de WhatsApp com asterisco simples (*texto*) para negrito moderado — NUNCA use asteriscos duplos (**texto**) ou Markdown.',
             '4. Informe o prazo de garantia previsto (ex.: 90 dias para o serviço executado).',
             '5. Convide o cliente a responder confirmando a aprovação ou tirando dúvidas. Texto pronto para envio, sem comentários extras.',
           ].join(' '),
@@ -827,7 +831,7 @@ export async function translateQuoteForCustomer(
       })
     );
 
-    const text = (response.text || '').trim();
+    const text = sanitizeWhatsAppBoldFormatting((response.text || '').trim());
     if (!text) {
       return buildLocalQuoteTranslationFallback(input);
     }

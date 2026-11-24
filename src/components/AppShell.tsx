@@ -27,6 +27,7 @@ import { RouteId } from '../types/lab';
 import { useLabStore } from '../store/useLabStore';
 import { OfflineIndicator, PWAInstallButton, PWAUpdateBanner } from './PWAComponents';
 import { FloatingCalculator } from './FloatingCalculator';
+import { PendingSyncModal } from './PendingSyncModal';
 
 interface AppShellProps {
   currentRoute: RouteId;
@@ -74,6 +75,7 @@ export const AppShell: React.FC<AppShellProps> = ({
   const { state, currentUser, canAccessRoute, logoutSession, syncStatus, syncNow } = useLabStore();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [logoutWarning, setLogoutWarning] = useState('');
+  const [pendingModalOpen, setPendingModalOpen] = useState(false);
 
   const openOrdersCount = state.orders.filter(
     (o) => o.status !== 'Entregue' && o.status !== 'Cancelado'
@@ -405,11 +407,23 @@ export const AppShell: React.FC<AppShellProps> = ({
                 }`}
               >
                 <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                {syncStatus.busy
-                  ? 'Sincronizando nuvem…'
-                  : syncStatus.loggedIn
-                  ? `${state.labProfile.lastSync}${syncStatus.pendingCount > 0 ? ` (${syncStatus.pendingCount} pend.)` : ''}`
-                  : state.labProfile.lastSync}
+                {syncStatus.busy ? (
+                  'Sincronizando nuvem…'
+                ) : (
+                  <>
+                    <span>{state.labProfile.lastSync}</span>
+                    {syncStatus.pendingCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setPendingModalOpen(true)}
+                        title="Inspecionar alterações pendentes de sincronização"
+                        className="ml-0.5 underline decoration-dotted underline-offset-2 font-bold hover:opacity-80 cursor-pointer"
+                      >
+                        ({syncStatus.pendingCount} pend.)
+                      </button>
+                    )}
+                  </>
+                )}
               </span>
             </div>
           </div>
@@ -513,6 +527,7 @@ export const AppShell: React.FC<AppShellProps> = ({
       <OfflineIndicator />
       <PWAUpdateBanner />
       <FloatingCalculator isDark={isHardwareDark} />
+      <PendingSyncModal open={pendingModalOpen} onClose={() => setPendingModalOpen(false)} />
     </div>
   );
 };
