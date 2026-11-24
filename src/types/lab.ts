@@ -342,6 +342,7 @@ export interface ServiceOrder {
   publicAcceptedAt?: string;
   publicAcceptedIp?: string;
   publicAcceptedUserAgent?: string;
+  publicAiSummary?: string;
   entryChecklist?: Record<string, boolean>;
   entryChecklist7?: Record<string, 's' | 'n' | 't'>;
   triage?: OrderTriage;

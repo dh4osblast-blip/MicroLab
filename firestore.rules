@@ -45,6 +45,19 @@ service cloud.firestore {
         && data.s == request.time;
     }
 
+    function isValidPublicAceiteMutableFields(data) {
+      return (!('osStatus' in data) || (data.osStatus is string && data.osStatus.size() <= 40))
+        && (!('expectedDeliveryDate' in data) || (data.expectedDeliveryDate is string && data.expectedDeliveryDate.size() <= 20))
+        && (!('createdDateLabel' in data) || (data.createdDateLabel is string && data.createdDateLabel.size() <= 40))
+        && (!('technician' in data) || (data.technician is string && data.technician.size() <= 80))
+        && (!('technicalReport' in data) || (data.technicalReport is string && data.technicalReport.size() <= 3000))
+        && (!('aiExplanation' in data) || (data.aiExplanation is string && data.aiExplanation.size() <= 3000))
+        && (!('entryChecklist' in data) || (data.entryChecklist is list && data.entryChecklist.size() <= 16 && (data.entryChecklist.size() == 0 || data.entryChecklist[0] is map)))
+        && (!('paidAmount' in data) || (data.paidAmount is int || data.paidAmount is float))
+        && (!('signalPaid' in data) || (data.signalPaid is int || data.signalPaid is float))
+        && (!('updatedAtMs' in data) || data.updatedAtMs is int);
+    }
+
     function isValidPublicAceiteCreate(data, token) {
       return data.keys().hasAll([
           'token', 'ownerUid', 'orderId', 'orderCode', 'status',
@@ -56,11 +69,13 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'token', 'ownerUid', 'orderId', 'orderCode', 'status',
-          'clientName', 'device', 'issue', 'serviceName',
-          'servicePrice', 'partsPrice', 'items', 'deliveryFee',
-          'discount', 'totalAmount', 'warrantyDays', 'condExec',
-          'warrantyText', 'quoteHash', 'evidencePhotos',
-          'createdAtMs', 'createdServerAt'
+          'osStatus', 'expectedDeliveryDate', 'createdDateLabel', 'technician',
+          'clientName', 'device', 'issue', 'technicalReport', 'aiExplanation',
+          'entryChecklist', 'serviceName', 'servicePrice', 'partsPrice',
+          'items', 'deliveryFee', 'discount', 'totalAmount', 'paidAmount',
+          'signalPaid', 'warrantyDays', 'condExec', 'warrantyText',
+          'quoteHash', 'evidencePhotos', 'createdAtMs', 'updatedAtMs',
+          'createdServerAt'
         ])
         && data.token == token
         && data.ownerUid == request.auth.uid
@@ -73,7 +88,7 @@ service cloud.firestore {
         && data.serviceName is string && data.serviceName.size() <= 200
         && (data.servicePrice is int || data.servicePrice is float)
         && (data.partsPrice is int || data.partsPrice is float)
-        && data.items is list && data.items.size() <= 50
+        && data.items is list && data.items.size() <= 50 && (data.items.size() == 0 || data.items[0] is map)
         && (data.deliveryFee is int || data.deliveryFee is float)
         && (data.discount is int || data.discount is float)
         && (data.totalAmount is int || data.totalAmount is float)
@@ -81,9 +96,10 @@ service cloud.firestore {
         && data.condExec is string && data.condExec.size() <= 2000
         && data.warrantyText is string && data.warrantyText.size() <= 2000
         && data.quoteHash is string && data.quoteHash.size() == 64 && data.quoteHash.matches('^[a-f0-9]{64}$')
-        && data.evidencePhotos is list && data.evidencePhotos.size() <= 4
+        && data.evidencePhotos is list && data.evidencePhotos.size() <= 4 && (data.evidencePhotos.size() == 0 || data.evidencePhotos[0] is map)
         && data.createdAtMs is int
-        && data.createdServerAt == request.time;
+        && data.createdServerAt == request.time
+        && isValidPublicAceiteMutableFields(data);
     }
 
     function isValidPublicAceiteAcceptUpdate(nextData, prevData) {
@@ -112,6 +128,35 @@ service cloud.firestore {
         && nextData.acceptedServerAt == request.time;
     }
 
+    function isValidPublicAceiteOwnerUpdate(nextData, prevData) {
+      return isSignedIn()
+        && prevData.ownerUid == request.auth.uid
+        && nextData.diff(prevData).affectedKeys().hasOnly([
+          'osStatus',
+          'expectedDeliveryDate',
+          'createdDateLabel',
+          'technician',
+          'technicalReport',
+          'aiExplanation',
+          'entryChecklist',
+          'evidencePhotos',
+          'paidAmount',
+          'signalPaid',
+          'updatedAtMs'
+        ])
+        && nextData.token == prevData.token
+        && nextData.ownerUid == prevData.ownerUid
+        && nextData.orderId == prevData.orderId
+        && nextData.orderCode == prevData.orderCode
+        && nextData.status == prevData.status
+        && nextData.quoteHash == prevData.quoteHash
+        && nextData.totalAmount == prevData.totalAmount
+        && nextData.createdServerAt == prevData.createdServerAt
+        && nextData.evidencePhotos is list && nextData.evidencePhotos.size() <= 4
+        && (nextData.evidencePhotos.size() == 0 || nextData.evidencePhotos[0] is map)
+        && isValidPublicAceiteMutableFields(nextData);
+    }
+
     // 1) Banco isolado da assistência técnica por UID
     match /usuarios/{uid}/reg/{docId} {
       allow list: if isValidUid(uid) && isOwner(uid);
@@ -125,7 +170,10 @@ service cloud.firestore {
       allow list: if false;
       allow get: if isValidPublicToken(token);
       allow create: if isSignedIn() && isValidPublicToken(token) && isValidPublicAceiteCreate(incoming(), token);
-      allow update: if isValidPublicToken(token) && isValidPublicAceiteAcceptUpdate(incoming(), existing());
+      allow update: if isValidPublicToken(token) && (
+        isValidPublicAceiteAcceptUpdate(incoming(), existing())
+        || isValidPublicAceiteOwnerUpdate(incoming(), existing())
+      );
       allow delete: if isSignedIn() && isValidPublicToken(token) && existing().ownerUid == request.auth.uid;
     }
   }

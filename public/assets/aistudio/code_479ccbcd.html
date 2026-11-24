@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+
+<html lang="pt-BR"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>MicroLab Assistência Técnica · Aceite Digital OS #2</title>
+<!-- Google Fonts: Poppins -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS v3 CDN with forms and container-queries plugins -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<!-- Tailwind Configuration -->
+<script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Poppins', 'sans-serif'],
+          },
+          colors: {
+            microlab: {
+              navy: '#102040',
+              royal: '#1B6FD1',
+              ice: '#F3F6FB',
+              emerald: '#16A34A',
+            },
+          },
+          borderRadius: {
+            card: '16px',
+          },
+        },
+      },
+    };
+  </script>
+<style data-purpose="base-typography-and-layout">
+    body {
+      font-family: 'Poppins', sans-serif;
+      background-color: #F3F6FB;
+      color: #1E293B;
+      -webkit-font-smoothing: antialiased;
+    }
+  </style>
+<style data-purpose="card-shadows-and-canvas">
+    .card-surface {
+      background-color: #FFFFFF;
+      border-radius: 16px;
+      box-shadow: 0 2px 10px rgba(16, 32, 64, 0.05);
+    }
+
+    #signature-pad {
+      touch-action: none;
+      cursor: crosshair;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex justify-center bg-[#F3F6FB]">
+<!-- Mobile-first container constrained to 390px -->
+<div class="w-full max-w-[390px] px-3.5 py-4 flex flex-col gap-3.5">
+<!-- BEGIN: InstitutionalHeader -->
+<header class="bg-[#102040] text-white rounded-card p-4 shadow-md" data-purpose="institutional-header">
+<div class="flex items-center justify-between gap-2.5">
+<div class="flex items-center gap-3 min-w-0">
+<img alt="Logotipo MicroLab Assistência Técnica" class="w-11 h-11 rounded-xl object-cover shrink-0 border border-white/15" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBv5hHmAHugO7dGsy3WYglNQAk68i_P7St59PDicxca3ifSGM9KJg14YLZliAlPPLInLLDRSuj8kTocq6bR-6qeamEJipG71pLLZp7UcDGnMVuTDjvhPFZiUdvsUFEI7oG466xYtVvuFebdzE6sUijwYoLq1sqHNYtttyKEf5y9cfH93zsAuWSNa9ZRWwYRDAzfEUOFu3ITp3Z5yTYPPssZ_wd7LUPi1g82KIP7_enCV4XuSdhn-ek8"/>
+<div class="min-w-0">
+<h1 class="text-[14px] font-semibold leading-tight truncate">MicroLab Assistência Técnica</h1>
+<p class="text-[11px] text-slate-300 leading-snug truncate">Acompanhamento &amp; Aceite Digital de OS</p>
+</div>
+</div>
+<!-- Quick WhatsApp Contact Button -->
+<a aria-label="Contato rápido via WhatsApp" class="shrink-0 inline-flex items-center gap-1.5 bg-[#16A34A] hover:bg-green-700 text-white text-[11px] font-medium px-2.5 py-1.5 rounded-full transition-colors" href="https://wa.me/5571991293552" rel="noopener noreferrer" target="_blank">
+<svg aria-hidden="true" class="w-3.5 h-3.5 fill-current" viewbox="0 0 24 24">
+<path d="M12.031 2c-5.516 0-9.969 4.453-9.969 9.969 0 1.766.469 3.484 1.344 5l-1.406 5.156 5.281-1.375c1.469.797 3.109 1.219 4.75 1.219 5.516 0 9.969-4.453 9.969-9.969S17.547 2 12.031 2zm5.813 14.125c-.25.703-1.438 1.344-2 1.422-.516.078-1.172.109-1.891-.125-.438-.141-1-.328-1.719-.641-3.016-1.313-4.984-4.359-5.141-4.563-.156-.203-1.234-1.641-1.234-3.125s.781-2.219 1.063-2.516c.281-.297.609-.375.813-.375.203 0 .406.016.578.016.188 0 .438-.078.688.516.25.609.859 2.094.938 2.25.078.156.125.344.031.547-.094.203-.141.328-.281.5-.141.172-.297.375-.422.5-.141.141-.281.297-.125.578.156.281.703 1.156 1.516 1.875 1.047.922 1.922 1.219 2.203 1.359.281.141.438.125.609-.063.172-.188.703-.828.891-1.109.188-.281.375-.234.625-.141.25.094 1.609.766 1.891.906.281.141.469.203.531.313.063.109.063.641-.188 1.344z"></path>
+</svg>
+<span>WhatsApp</span>
+</a>
+</div>
+</header>
+<!-- END: InstitutionalHeader -->
+<!-- BEGIN: RealtimeStatusCard -->
+<section class="card-surface p-4" data-purpose="realtime-status-card">
+<div class="flex items-center justify-between gap-2 mb-3">
+<span class="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Status Atual</span>
+<span class="inline-flex items-center gap-1.5 bg-amber-100 text-amber-800 text-[11px] font-semibold px-2.5 py-1 rounded-full">
+<span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+          Orçamento Aguardando Aceite
+        </span>
+</div>
+<!-- Compact horizontal 5-step progress bar -->
+<div aria-label="Progresso da Ordem de Serviço" class="mb-3">
+<div class="grid grid-cols-5 gap-1 text-center">
+<!-- Step 1: Active -->
+<div class="flex flex-col items-center">
+<div class="w-full h-1.5 rounded-full bg-[#1B6FD1] mb-1.5"></div>
+<span class="text-[10px] font-semibold text-[#1B6FD1] leading-tight">1. Entrada</span>
+</div>
+<!-- Step 2: Active -->
+<div class="flex flex-col items-center">
+<div class="w-full h-1.5 rounded-full bg-[#1B6FD1] mb-1.5"></div>
+<span class="text-[10px] font-semibold text-[#1B6FD1] leading-tight">2. Diagnóst.</span>
+</div>
+<!-- Step 3: Active (Current) -->
+<div class="flex flex-col items-center">
+<div class="w-full h-1.5 rounded-full bg-[#1B6FD1] mb-1.5"></div>
+<span class="text-[10px] font-bold text-[#1B6FD1] leading-tight">3. Orçamento</span>
+</div>
+<!-- Step 4: Pending -->
+<div class="flex flex-col items-center">
+<div class="w-full h-1.5 rounded-full bg-slate-200 mb-1.5"></div>
+<span class="text-[10px] font-medium text-slate-400 leading-tight">4. Reparo</span>
+</div>
+<!-- Step 5: Pending -->
+<div class="flex flex-col items-center">
+<div class="w-full h-1.5 rounded-full bg-slate-200 mb-1.5"></div>
+<span class="text-[10px] font-medium text-slate-400 leading-tight">5. Pronto</span>
+</div>
+</div>
+</div>
+<!-- Delivery forecast & technician info -->
+<div class="pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
+<div>
+<span class="text-slate-400">Previsão:</span>
+<strong class="font-semibold text-slate-700">Amanhã, 17:00</strong>
+</div>
+<div>
+<span class="text-slate-400">Técnico:</span>
+<strong class="font-semibold text-slate-700">Téc. Leonardo</strong>
+</div>
+</div>
+</section>
+<!-- END: RealtimeStatusCard -->
+<!-- BEGIN: ServiceOrderDetails -->
+<section class="card-surface p-4" data-purpose="service-order-details">
+<div class="flex items-center justify-between gap-2 mb-3">
+<div class="flex items-center gap-1.5">
+<svg aria-hidden="true" class="w-4 h-4 text-[#1B6FD1]" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<rect height="20" rx="2" width="12" x="6" y="2"></rect>
+<line x1="12" x2="12.01" y1="18" y2="18"></line>
+</svg>
+<h2 class="text-[14px] font-semibold text-[#102040]">Ordem de Serviço #2</h2>
+</div>
+<span class="text-[11px] font-medium text-slate-500 truncate">Ester Oliveira Santos</span>
+</div>
+<!-- Clean 2-column grid for device metadata -->
+<div class="grid grid-cols-2 gap-2.5">
+<div class="bg-[#F8FAFC] rounded-xl p-2.5 border border-slate-100 col-span-2">
+<span class="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Equipamento / Modelo</span>
+<span class="text-[12px] font-semibold text-slate-800">iPhone 13 Pro 128GB</span>
+</div>
+<div class="bg-[#F8FAFC] rounded-xl p-2.5 border border-slate-100">
+<span class="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Data de Entrada</span>
+<span class="text-[12px] font-semibold text-slate-800">22/10/2024</span>
+</div>
+<div class="bg-[#F8FAFC] rounded-xl p-2.5 border border-slate-100">
+<span class="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Garantia Prevista</span>
+<span class="text-[12px] font-semibold text-slate-800">90 dias (CDC)</span>
+</div>
+<div class="bg-[#F8FAFC] rounded-xl p-2.5 border border-slate-100 col-span-2">
+<span class="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">Defeito Relatado pelo Cliente</span>
+<p class="text-[12px] text-slate-700 leading-snug mt-0.5">
+            Aparelho não carrega e apresenta aquecimento próximo ao conector.
+          </p>
+</div>
+</div>
+</section>
+<!-- END: ServiceOrderDetails -->
+<!-- BEGIN: TechnicalReportCard -->
+<section class="card-surface p-4 border border-[#1B6FD1]/35 bg-gradient-to-b from-[#F8FBFF] to-white" data-purpose="technical-report">
+<div class="flex items-start gap-2.5 mb-2.5">
+<div class="w-8 h-8 rounded-xl bg-[#1B6FD1]/10 text-[#1B6FD1] flex items-center justify-center shrink-0">
+<svg aria-hidden="true" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</div>
+<div>
+<h2 class="text-[14px] font-semibold text-[#102040] leading-tight">Laudo Técnico &amp; Diagnóstico</h2>
+<p class="text-[11px] text-slate-500 leading-snug mt-0.5">
+            Parecer técnico explicado de forma clara para você (traduzido com IA)
+          </p>
+</div>
+</div>
+<!-- Structured diagnostic explanation -->
+<div class="space-y-2 text-[12px] text-slate-700 leading-relaxed bg-white rounded-xl p-3 border border-slate-100">
+<p>
+<strong class="text-[#102040]">Defeito encontrado:</strong> Identificada falha no circuito integrado de carga (CI Tristar/Hydra) e oxidação leve nos pinos do conector FPC.
+        </p>
+<p>
+<strong class="text-[#102040]">Procedimento recomendado:</strong> Substituição do CI de carga em microsolda SMD e limpeza ultrassônica da placa.
+        </p>
+<div class="bg-amber-50 border border-amber-200/70 rounded-lg p-2 text-[11px] text-amber-900">
+<strong>Alerta importante:</strong> Bateria com 84% de saúde; sem perda de dados prevista.
+        </div>
+</div>
+<!-- Entry checklist chips -->
+<div class="mt-3">
+<span class="block text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1.5">Checklist de Entrada</span>
+<div class="flex flex-wrap gap-1.5">
+<span class="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200/60">Liga: Sim</span>
+<span class="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200/60">Tela: Íntegra</span>
+<span class="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-200/60">Oxidação: Leve</span>
+<span class="inline-flex items-center px-2.5 py-1 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200/60">Face ID: OK</span>
+</div>
+</div>
+</section>
+<!-- END: TechnicalReportCard -->
+<!-- BEGIN: PhotoEvidenceCard -->
+<section class="card-surface p-4" data-purpose="photo-evidence">
+<div class="flex items-center justify-between mb-3">
+<h2 class="text-[14px] font-semibold text-[#102040]">Fotos do Aparelho (Check-in &amp; Evidências)</h2>
+<span class="text-[11px] font-semibold text-[#1B6FD1] bg-[#1B6FD1]/10 px-2 py-0.5 rounded-full shrink-0">4 fotos</span>
+</div>
+<!-- 2x2 Thumbnail Grid -->
+<div class="grid grid-cols-2 gap-2.5">
+<button class="photo-thumb group text-left focus:outline-none" data-caption="Estado frontal na entrada" type="button">
+<div class="relative rounded-xl overflow-hidden bg-slate-100 aspect-[4/3]">
+<img alt="Estado frontal na entrada" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBBo-b_uLBV1TIkvUG_obfLWqWar7TIKj3GqswrwmDetPLyaCKhyHSUgk5HY8vY7Lu_KczqFRXib6xi50YUHltYvZH3nxOQAtGled6ivS9brwxwqzep3H6KuDKa7hQO0RkmwjYxSVxHAWCslxj_ekDcC4_DWK8lW6gR6PNCzBS_XM78HAC3XSrkAWLHo-EWzIeBJEB3xg2FYDtKG6C1BIFrNIUgjBJfIfKJBITyDbQ"/>
+<span class="absolute bottom-1.5 right-1.5 w-6 h-6 rounded-full bg-black/55 text-white flex items-center justify-center">
+<svg aria-hidden="true" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<circle cx="11" cy="11" r="7"></circle>
+<line x1="21" x2="16.65" y1="21" y2="16.65"></line>
+</svg>
+</span>
+</div>
+<span class="block text-[11px] font-medium text-slate-600 mt-1 truncate">Estado frontal na entrada</span>
+</button>
+<button class="photo-thumb group text-left focus:outline-none" data-caption="Tampa traseira" type="button">
+<div class="relative rounded-xl overflow-hidden bg-slate-100 aspect-[4/3]">
+<img alt="Tampa traseira" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBU07MRACyTI9Zm1sNzxRFz1e4k2ksRQD51oihV4bAymzeSIbM-IbWzZBYfH0q8jWJIsbMNf69XPqOv5nWrOSpOHVyOjMnzra2zXUPqyJbpHcoSZ8O0Buav9tcYjkaaoleyUW6pLilAHX47PyeDvWZPXebo-grY5FktDH6tSvujfJ8mJQJNvKyoRXkFgZfnW-mwJVEolvje_ItHByZQWpS5ImGDJoQgNMCxFw71wPk"/>
+<span class="absolute bottom-1.5 right-1.5 w-6 h-6 rounded-full bg-black/55 text-white flex items-center justify-center">
+<svg aria-hidden="true" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<circle cx="11" cy="11" r="7"></circle>
+<line x1="21" x2="16.65" y1="21" y2="16.65"></line>
+</svg>
+</span>
+</div>
+<span class="block text-[11px] font-medium text-slate-600 mt-1 truncate">Tampa traseira</span>
+</button>
+<button class="photo-thumb group text-left focus:outline-none" data-caption="Conector de carga" type="button">
+<div class="relative rounded-xl overflow-hidden bg-slate-100 aspect-[4/3]">
+<img alt="Conector de carga" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD0lkdXIzlyJbuexBjQHqcBRRqqtuv45qE1gjFGBFCZNSsvarxwGiKlarbcGL13iJEJckXjhoX3VLdo4ih56J3tBZB36gL306VE14wMWndimM61iwuN35IVtIrb1fpVQdgyamx7LTJSQd_Xb3fE6aAn376_7NNmMlbAFCIE7bTGYYqb2eUzFt5Lg13HjBCcPkALhDFG_ZCcVzE0fBSqS0uz7EiX2kJ0Ls-EhBTD-EA"/>
+<span class="absolute bottom-1.5 right-1.5 w-6 h-6 rounded-full bg-black/55 text-white flex items-center justify-center">
+<svg aria-hidden="true" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<circle cx="11" cy="11" r="7"></circle>
+<line x1="21" x2="16.65" y1="21" y2="16.65"></line>
+</svg>
+</span>
+</div>
+<span class="block text-[11px] font-medium text-slate-600 mt-1 truncate">Conector de carga</span>
+</button>
+<button class="photo-thumb group text-left focus:outline-none" data-caption="Detalhe na placa" type="button">
+<div class="relative rounded-xl overflow-hidden bg-slate-100 aspect-[4/3]">
+<img alt="Detalhe na placa" class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD2s24_7K-x_vIAHpwjeox27axtM9er_GLeTGu3rWbl6hzYEryQvGOffRzlnM1zzGzC7muh7MA9rtHxHYs6_wK28SuYfEMHlLXZzS73K0aFW40I8ks4mAra4XcLBmOk9Xw4APGLBIXSbtv1xYLKO1umdDPsIIPxD-6ZnJnmdCfkzAlb2pr-5EHxAjpDTrqMFPXlary_Hofc2-VNdbc5GrNhsfiJDVwcmUf95s6WA0o"/>
+<span class="absolute bottom-1.5 right-1.5 w-6 h-6 rounded-full bg-black/55 text-white flex items-center justify-center">
+<svg aria-hidden="true" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<circle cx="11" cy="11" r="7"></circle>
+<line x1="21" x2="16.65" y1="21" y2="16.65"></line>
+</svg>
+</span>
+</div>
+<span class="block text-[11px] font-medium text-slate-600 mt-1 truncate">Detalhe na placa</span>
+</button>
+</div>
+</section>
+<!-- END: PhotoEvidenceCard -->
+<!-- BEGIN: BudgetBreakdownCard -->
+<section class="card-surface p-4" data-purpose="budget-breakdown">
+<h2 class="text-[14px] font-semibold text-[#102040] mb-3">Valores Discriminados do Orçamento</h2>
+<div class="rounded-xl border border-slate-100 overflow-hidden">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-[#F8FAFC] text-[10px] font-semibold uppercase tracking-wider text-slate-400 border-b border-slate-100">
+<th class="py-2 px-3">Descrição</th>
+<th class="py-2 px-2 text-center">Qtd</th>
+<th class="py-2 px-3 text-right">Subtotal</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-slate-100 text-[12px]">
+<tr>
+<td class="py-2.5 px-3 text-slate-700">Diagnóstico de bancada</td>
+<td class="py-2.5 px-2 text-center text-slate-500">1</td>
+<td class="py-2.5 px-3 text-right font-medium text-slate-800 whitespace-nowrap">R$ 35,00</td>
+</tr>
+<tr>
+<td class="py-2.5 px-3 text-slate-700">Troca de CI de Carga (Microsolda SMD)</td>
+<td class="py-2.5 px-2 text-center text-slate-500">1</td>
+<td class="py-2.5 px-3 text-right font-medium text-slate-800 whitespace-nowrap">R$ 380,00</td>
+</tr>
+<tr>
+<td class="py-2.5 px-3 text-[#16A34A] font-medium">Desconto concedido</td>
+<td class="py-2.5 px-2 text-center text-slate-400">-</td>
+<td class="py-2.5 px-3 text-right font-semibold text-[#16A34A] whitespace-nowrap">- R$ 35,00</td>
+</tr>
+<tr>
+<td class="py-2.5 px-3 text-slate-600">Sinal já pago</td>
+<td class="py-2.5 px-2 text-center text-slate-400">-</td>
+<td class="py-2.5 px-3 text-right font-medium text-slate-700 whitespace-nowrap">- R$ 80,00</td>
+</tr>
+</tbody>
+<tfoot>
+<tr class="bg-[#F8FBFF] border-t border-slate-200">
+<td class="py-3 px-3 text-[12px] font-bold text-[#102040] uppercase" colspan="2">
+                Valor Total / Saldo Restante
+              </td>
+<td class="py-3 px-3 text-right text-[15px] font-bold text-[#1B6FD1] whitespace-nowrap">
+                R$ 300,00
+              </td>
+</tr>
+</tfoot>
+</table>
+</div>
+</section>
+<!-- END: BudgetBreakdownCard -->
+<!-- BEGIN: TermsAndWarrantyCard -->
+<section class="card-surface p-4" data-purpose="terms-and-warranty">
+<div class="flex items-center justify-between gap-2 mb-2.5">
+<h2 class="text-[14px] font-semibold text-[#102040]">Condições Gerais &amp; Garantia</h2>
+<span class="inline-flex items-center gap-1 text-[10px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200/70 shrink-0">
+<svg aria-hidden="true" class="w-3 h-3 text-[#1B6FD1]" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<rect height="10" rx="2" width="14" x="5" y="11"></rect>
+<path d="M8 11V7a4 4 0 018 0v4"></path>
+</svg>
+          SHA-256: e9f39e312946...
+        </span>
+</div>
+<div class="space-y-2 text-[11px] text-slate-600 leading-relaxed">
+<p>
+<strong class="text-slate-800">Condições de Execução:</strong> Atenção, a não retirada do aparelho no prazo de 90 dias implicará na venda do mesmo para pagamento de gastos (Art. 6º, Item 3 do CDC).
+        </p>
+<p>
+<strong class="text-slate-800">Garantia:</strong> Garantia de 90 dias referentes apenas ao serviço executado e peça trocada (Art. 26, II, CDC). A garantia NÃO COBRE mau uso, quebras, trincos, riscos, quedas ou contato com líquidos/oxidação.
+        </p>
+</div>
+</section>
+<!-- END: TermsAndWarrantyCard -->
+<!-- BEGIN: DigitalSignatureCard -->
+<section class="card-surface p-4" data-purpose="digital-signature">
+<div class="flex items-center justify-between mb-2.5">
+<h2 class="text-[14px] font-semibold text-[#102040]">Assinatura Digital de Aprovação</h2>
+<button class="inline-flex items-center gap-1 text-[11px] font-medium text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-2.5 py-1 rounded-lg transition-colors" id="clear-signature-btn" type="button">
+<svg aria-hidden="true" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<path d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+          Limpar
+        </button>
+</div>
+<!-- Signature Canvas Box -->
+<div class="bg-white border-2 border-dashed border-slate-300 rounded-xl overflow-hidden">
+<canvas class="w-full h-36 block" id="signature-pad"></canvas>
+</div>
+<p class="text-center text-[11px] text-slate-400 mt-1.5">
+        Assine com o dedo ou mouse no quadro acima
+      </p>
+<!-- Terms Agreement Checkbox -->
+<label class="mt-3 flex items-start gap-2.5 bg-[#F8FAFC] p-3 rounded-xl border border-slate-200/80 cursor-pointer">
+<input class="mt-0.5 rounded border-slate-300 text-[#16A34A] focus:ring-[#16A34A]" id="terms-checkbox" type="checkbox"/>
+<span class="text-[11px] text-slate-700 leading-snug">
+          Li e concordo com os serviços, valor total de <strong>R$ 300,00</strong> e termos de garantia/execução acima.
+        </span>
+</label>
+<!-- Primary Approval Button -->
+<button class="mt-3 w-full bg-[#16A34A] hover:bg-green-700 active:scale-[0.99] text-white font-semibold text-[13px] py-3.5 px-4 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2" id="approve-btn" type="button">
+<svg aria-hidden="true" class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.2" viewbox="0 0 24 24">
+<path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+<span>Aprovar Orçamento e Assinar</span>
+</button>
+</section>
+<!-- END: DigitalSignatureCard -->
+<!-- BEGIN: Footer -->
+<footer class="text-center py-2" data-purpose="page-footer">
+<p class="text-[10px] text-slate-400">
+        MicroLab OS · Aceite Digital com Integridade SHA-256
+      </p>
+</footer>
+<!-- END: Footer -->
+</div>
+<!-- Fullscreen Photo Lightbox Modal -->
+<div aria-modal="true" class="fixed inset-0 z-50 hidden bg-black/85 flex-col items-center justify-center p-4" id="photo-modal" role="dialog">
+<button aria-label="Fechar visualização" class="self-end mb-3 text-white bg-white/15 hover:bg-white/25 rounded-full p-2" id="close-modal-btn" type="button">
+<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewbox="0 0 24 24">
+<path d="M6 18L18 6M6 6l12 12" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>
+</button>
+<img alt="" class="max-w-full max-h-[75vh] rounded-xl object-contain" id="modal-img" src=""/>
+<p class="text-white text-[12px] font-medium mt-3 text-center" id="modal-caption"></p>
+</div>
+<script data-purpose="signature-pad-handler">
+    (function () {
+      const canvas = document.getElementById('signature-pad');
+      const clearBtn = document.getElementById('clear-signature-btn');
+      const ctx = canvas.getContext('2d');
+      let drawing = false;
+      let hasSigned = false;
+
+      function resizeCanvas() {
+        const ratio = Math.max(window.devicePixelRatio || 1, 1);
+        const rect = canvas.getBoundingClientRect();
+        canvas.width = rect.width * ratio;
+        canvas.height = rect.height * ratio;
+        ctx.scale(ratio, ratio);
+        ctx.strokeStyle = '#102040';
+        ctx.lineWidth = 2.2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+      }
+
+      function getPos(e) {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return { x: clientX - rect.left, y: clientY - rect.top };
+      }
+
+      function startDraw(e) {
+        drawing = true;
+        hasSigned = true;
+        const pos = getPos(e);
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y);
+      }
+
+      function draw(e) {
+        if (!drawing) return;
+        const pos = getPos(e);
+        ctx.lineTo(pos.x, pos.y);
+        ctx.stroke();
+      }
+
+      function stopDraw() {
+        drawing = false;
+      }
+
+      resizeCanvas();
+      window.addEventListener('resize', resizeCanvas);
+
+      canvas.addEventListener('mousedown', startDraw);
+      canvas.addEventListener('mousemove', draw);
+      window.addEventListener('mouseup', stopDraw);
+
+      canvas.addEventListener('touchstart', startDraw, { passive: true });
+      canvas.addEventListener('touchmove', draw, { passive: true });
+      window.addEventListener('touchend', stopDraw);
+
+      clearBtn.addEventListener('click', () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        hasSigned = false;
+      });
+
+      document.getElementById('approve-btn').addEventListener('click', () => {
+        const agreed = document.getElementById('terms-checkbox').checked;
+        if (!hasSigned) {
+          alert('Por favor, assine no quadro antes de aprovar o orçamento.');
+          return;
+        }
+        if (!agreed) {
+          alert('Por favor, marque a caixa de concordância com os termos e valores.');
+          return;
+        }
+        alert('Orçamento aprovado e assinado com sucesso!');
+      });
+    })();
+  </script>
+<script data-purpose="photo-lightbox">
+    (function () {
+      const modal = document.getElementById('photo-modal');
+      const modalImg = document.getElementById('modal-img');
+      const modalCaption = document.getElementById('modal-caption');
+      const closeBtn = document.getElementById('close-modal-btn');
+
+      document.querySelectorAll('.photo-thumb').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const img = btn.querySelector('img');
+          modalImg.src = img.src;
+          modalImg.alt = img.alt;
+          modalCaption.textContent = btn.dataset.caption || '';
+          modal.classList.remove('hidden');
+          modal.classList.add('flex');
+        });
+      });
+
+      function closeModal() {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }
+
+      closeBtn.addEventListener('click', closeModal);
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeModal();
+      });
+    })();
+  </script>
+</body></html>

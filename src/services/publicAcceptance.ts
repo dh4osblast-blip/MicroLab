@@ -1,6 +1,7 @@
 import { LabConfig, ServiceOrder } from '../types/lab';
 import {
   calcOrderTotalAmount,
+  formatDateBR,
   resolveOrderWarrantyDays,
 } from '../utils/pricing';
 import {
@@ -21,15 +22,27 @@ export interface PublicAcceptanceEvidencePhoto {
   dataUrl: string;
 }
 
+export interface PublicAcceptanceChecklistChip {
+  label: string;
+  tone: 'ok' | 'warn' | 'neutral';
+}
+
 export interface PublicAcceptanceDocument {
   token: string;
   ownerUid: string;
   orderId: number;
   orderCode: string;
   status: 'pending' | 'accepted';
+  osStatus?: string;
+  expectedDeliveryDate?: string;
+  createdDateLabel?: string;
+  technician?: string;
   clientName: string;
   device: string;
   issue: string;
+  technicalReport?: string;
+  aiExplanation?: string;
+  entryChecklist?: PublicAcceptanceChecklistChip[];
   serviceName: string;
   servicePrice: number;
   partsPrice: number;
@@ -37,12 +50,15 @@ export interface PublicAcceptanceDocument {
   deliveryFee: number;
   discount: number;
   totalAmount: number;
+  paidAmount?: number;
+  signalPaid?: number;
   warrantyDays: number;
   condExec: string;
   warrantyText: string;
   quoteHash: string;
   evidencePhotos: PublicAcceptanceEvidencePhoto[];
   createdAtMs: number;
+  updatedAtMs?: number;
   createdServerAt?: string;
   signaturePng?: string;
   acceptedIp?: string;
@@ -64,6 +80,12 @@ export function generatePublicToken128(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * Hash criptográfico SHA-256 restrito ao escopo contratual do orçamento aprovado
+ * (itens, valores, defeito relatado, garantia e condições).
+ * Alterações operacionais de acompanhamento (osStatus, previsão, laudo, checklist, fotos, pagamentos)
+ * não participam deste hash para preservar a integridade da assinatura write-once do cliente.
+ */
 export async function computeQuoteSha256Hex(payload: {
   orderId: number;
   orderCode: string;
@@ -122,6 +144,29 @@ export async function computeQuoteSha256Hex(payload: {
   ).padEnd(64, '0');
 }
 
+export async function verifyPublicDocumentQuoteHash(
+  doc: PublicAcceptanceDocument
+): Promise<boolean> {
+  if (!doc.quoteHash || !/^[a-f0-9]{64}$/.test(doc.quoteHash)) return false;
+  const computed = await computeQuoteSha256Hex({
+    orderId: doc.orderId,
+    orderCode: doc.orderCode,
+    device: doc.device,
+    issue: doc.issue,
+    serviceName: doc.serviceName,
+    servicePrice: doc.servicePrice,
+    partsPrice: doc.partsPrice,
+    items: doc.items,
+    deliveryFee: doc.deliveryFee,
+    discount: doc.discount,
+    totalAmount: doc.totalAmount,
+    warrantyDays: doc.warrantyDays,
+    condExec: doc.condExec,
+    warrantyText: doc.warrantyText,
+  });
+  return computed === doc.quoteHash;
+}
+
 export function buildPublicAcceptanceUrl(token: string, projectId: string): string {
   const base = `${window.location.origin}${window.location.pathname}`;
   const params = new URLSearchParams();
@@ -159,6 +204,196 @@ export function parsePublicAcceptanceParamsFromLocation(): {
   return null;
 }
 
+/**
+ * LGPD & Sigilo: remove CPF, e-mail, IMEI completo (14-17 dígitos), senhas/PIN/padrões e valores de custo internos.
+ */
+export function scrubPublicText(raw: string): string {
+  return String(raw || '')
+    .replace(/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/g, '[dados protegidos]')
+    .replace(/\b\d{14,17}\b/g, '[IMEI protegido]')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[contato protegido]')
+    .replace(
+      /(?:^|[\s;,.])(?:senha|pin|padr[aã]o\s*(?:3x3|de\s*desbloqueio)?|passcode|desbloqueio)\s*[:=\-]?\s*[^\n,;]+/gi,
+      ' [credencial protegida]'
+    )
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function buildPublicChecklistChips(order: ServiceOrder): PublicAcceptanceChecklistChip[] {
+  const chips: PublicAcceptanceChecklistChip[] = [];
+  const ck7 = order.entryChecklist7;
+
+  if (ck7 && typeof ck7 === 'object') {
+    if (ck7.liga === 's') chips.push({ label: 'Liga: Sim', tone: 'ok' });
+    else if (ck7.liga === 'n') chips.push({ label: 'Liga: Não', tone: 'warn' });
+
+    if (ck7.tela === 's') chips.push({ label: 'Tela: Íntegra', tone: 'ok' });
+    else if (ck7.tela === 'n') chips.push({ label: 'Tela: Com avaria', tone: 'warn' });
+
+    if (order.triage?.oxi || ck7.liq === 's') {
+      chips.push({ label: 'Oxidação / Umidade: Detectada', tone: 'warn' });
+    } else if (ck7.liq === 'n') {
+      chips.push({ label: 'Sem sinais de líquido', tone: 'ok' });
+    }
+
+    if (ck7.audio === 's') chips.push({ label: 'Áudio: OK', tone: 'ok' });
+    else if (ck7.audio === 'n') chips.push({ label: 'Áudio: Falha', tone: 'warn' });
+
+    if (ck7.cam === 's') chips.push({ label: 'Câmeras: OK', tone: 'ok' });
+    else if (ck7.cam === 'n') chips.push({ label: 'Câmeras: Falha', tone: 'warn' });
+
+    if (ck7.carga === 's') chips.push({ label: 'Conector carga: OK', tone: 'ok' });
+    else if (ck7.carga === 'n') chips.push({ label: 'Conector carga: Falha', tone: 'warn' });
+
+    if (ck7.marcas === 's') chips.push({ label: 'Carcaça: Com marcas de uso', tone: 'neutral' });
+    else if (ck7.marcas === 'n') chips.push({ label: 'Carcaça: Sem marcas', tone: 'ok' });
+  } else {
+    if (order.triage?.oxi) {
+      chips.push({ label: 'Oxidação: Detectada', tone: 'warn' });
+    }
+    const legacy = order.checklist;
+    if (legacy) {
+      if (legacy.cameras && !/testa|verificar/i.test(legacy.cameras)) {
+        chips.push({ label: `Câmeras: ${legacy.cameras}`, tone: 'ok' });
+      }
+      if (legacy.chassis && !/testa/i.test(legacy.chassis)) {
+        chips.push({
+          label: `Carcaça: ${legacy.chassis}`,
+          tone: /marca/i.test(legacy.chassis) ? 'neutral' : 'ok',
+        });
+      }
+    }
+  }
+
+  if (order.triage?.bat) {
+    chips.push({ label: 'Bateria: Inchada (atenção)', tone: 'warn' });
+  }
+
+  return chips.slice(0, 12);
+}
+
+function buildPublicTechnicalReport(order: ServiceOrder): string {
+  const sections: string[] = [];
+  const rawNotes = (order.notes || '').trim();
+  const rawDiag = (order.diagnosis || '').trim();
+  const genericDefault = 'Em acompanhamento técnico na bancada.';
+
+  const primaryNote = rawNotes || (rawDiag && rawDiag !== genericDefault ? rawDiag : '');
+  if (primaryNote) {
+    sections.push(scrubPublicText(primaryNote));
+  }
+
+  if (Array.isArray(order.laudos) && order.laudos.length > 0) {
+    const latestLaudo = order.laudos[order.laudos.length - 1];
+    const parts: string[] = [];
+    if (latestLaudo.defeito) parts.push(`Diagnóstico: ${latestLaudo.defeito}`);
+    if (latestLaudo.obs) parts.push(latestLaudo.obs);
+    const laudoText = scrubPublicText(parts.join(' — '));
+    if (laudoText && !sections.some((s) => s.includes(laudoText))) {
+      sections.push(laudoText);
+    }
+  }
+
+  if (Array.isArray(order.testesFonte) && order.testesFonte.length > 0) {
+    const latestPower = order.testesFonte[order.testesFonte.length - 1];
+    if (latestPower.cliResumo) {
+      const cleanPower = scrubPublicText(latestPower.cliResumo);
+      if (cleanPower && !sections.some((s) => s.includes(cleanPower))) {
+        sections.push(`Análise elétrica: ${cleanPower}`);
+      }
+    }
+  }
+
+  return sections.join('\n\n').slice(0, 2900);
+}
+
+/**
+ * Recomprime cada foto via Canvas (máx. 640 px de largura, JPEG qualidade 0.65)
+ * para garantir carregamento ágil no 4G e manter o documento bem abaixo de 1 MB no Firestore.
+ */
+async function recompressPublicPhotoJpeg(
+  rawDataUrl: string,
+  maxWidth = 640,
+  quality = 0.65
+): Promise<string> {
+  if (!rawDataUrl || !rawDataUrl.startsWith('data:image/')) return '';
+  if (typeof document === 'undefined') return rawDataUrl;
+
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onerror = () => resolve('');
+    img.onload = () => {
+      let w = img.naturalWidth || img.width;
+      let h = img.naturalHeight || img.height;
+      if (!w || !h) {
+        resolve('');
+        return;
+      }
+      if (w > maxWidth) {
+        h = Math.max(1, Math.round((h * maxWidth) / w));
+        w = maxWidth;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(rawDataUrl);
+        return;
+      }
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+
+      let encoded = canvas.toDataURL('image/jpeg', quality);
+      if (encoded.length > 160000) {
+        encoded = canvas.toDataURL('image/jpeg', 0.5);
+      }
+      resolve(encoded.startsWith('data:image/') ? encoded : '');
+    };
+    img.src = rawDataUrl;
+  });
+}
+
+async function collectCompressedPublicPhotos(
+  uid: string,
+  order: ServiceOrder
+): Promise<PublicAcceptanceEvidencePhoto[]> {
+  const evidencePhotos: PublicAcceptanceEvidencePhoto[] = [];
+  let totalPhotoBytes = 0;
+  const maxTotalPhotoChars = 540000;
+
+  for (const slot of ['front', 'back', 'rails', 'dock'] as const) {
+    if (evidencePhotos.length >= 4) break;
+    const mediaId = order.evidenceMediaIds?.[slot];
+    let rawUrl = '';
+    if (mediaId) {
+      const rec = await getMediaRecord(uid, mediaId);
+      if (rec && !rec.deleted && rec.dataUrl.startsWith('data:image/')) {
+        rawUrl = rec.dataUrl;
+      }
+    }
+    if (!rawUrl && order.evidencePhotos?.[slot]?.startsWith('data:image/')) {
+      rawUrl = order.evidencePhotos[slot]!;
+    }
+    if (!rawUrl) continue;
+
+    const compressed = await recompressPublicPhotoJpeg(rawUrl, 640, 0.65);
+    if (!compressed) continue;
+    if (totalPhotoBytes + compressed.length > maxTotalPhotoChars) continue;
+
+    evidencePhotos.push({
+      slot,
+      label: EVIDENCE_LABELS[slot],
+      dataUrl: compressed,
+    });
+    totalPhotoBytes += compressed.length;
+  }
+
+  return evidencePhotos;
+}
+
 type FsValue =
   | { stringValue: string }
   | { integerValue: string }
@@ -179,11 +414,16 @@ function decodeFsNumber(v: Record<string, unknown> | undefined): number {
   return 0;
 }
 
-function decodePublicDoc(rawJson: { fields?: Record<string, Record<string, unknown>> }): PublicAcceptanceDocument | null {
+function decodePublicDoc(
+  rawJson: { fields?: Record<string, Record<string, unknown>> }
+): PublicAcceptanceDocument | null {
   const f = rawJson.fields;
   if (!f || !f.token || !f.orderCode) return null;
 
-  const rawItems = ((f.items?.arrayValue as { values?: Array<{ mapValue?: { fields?: Record<string, Record<string, unknown>> } }> } | undefined)?.values || []);
+  const rawItems =
+    ((f.items?.arrayValue as
+      | { values?: Array<{ mapValue?: { fields?: Record<string, Record<string, unknown>> } }> }
+      | undefined)?.values || []);
   const items: PublicAcceptanceLineItem[] = rawItems
     .map((entry) => {
       const mf = entry.mapValue?.fields;
@@ -196,7 +436,10 @@ function decodePublicDoc(rawJson: { fields?: Record<string, Record<string, unkno
     })
     .filter((x): x is PublicAcceptanceLineItem => Boolean(x && x.d));
 
-  const rawPhotos = ((f.evidencePhotos?.arrayValue as { values?: Array<{ mapValue?: { fields?: Record<string, Record<string, unknown>> } }> } | undefined)?.values || []);
+  const rawPhotos =
+    ((f.evidencePhotos?.arrayValue as
+      | { values?: Array<{ mapValue?: { fields?: Record<string, Record<string, unknown>> } }> }
+      | undefined)?.values || []);
   const evidencePhotos: PublicAcceptanceEvidencePhoto[] = rawPhotos
     .map((entry) => {
       const mf = entry.mapValue?.fields;
@@ -211,6 +454,23 @@ function decodePublicDoc(rawJson: { fields?: Record<string, Record<string, unkno
     })
     .filter((x): x is PublicAcceptanceEvidencePhoto => Boolean(x));
 
+  const rawChecklist =
+    ((f.entryChecklist?.arrayValue as
+      | { values?: Array<{ mapValue?: { fields?: Record<string, Record<string, unknown>> } }> }
+      | undefined)?.values || []);
+  const entryChecklist: PublicAcceptanceChecklistChip[] = rawChecklist
+    .map((entry) => {
+      const mf = entry.mapValue?.fields;
+      if (!mf) return null;
+      const label = decodeFsString(mf.label);
+      if (!label) return null;
+      const toneRaw = decodeFsString(mf.tone);
+      const tone: 'ok' | 'warn' | 'neutral' =
+        toneRaw === 'ok' || toneRaw === 'warn' ? toneRaw : 'neutral';
+      return { label, tone };
+    })
+    .filter((x): x is PublicAcceptanceChecklistChip => Boolean(x));
+
   const statusRaw = decodeFsString(f.status);
   const status: 'pending' | 'accepted' = statusRaw === 'accepted' ? 'accepted' : 'pending';
 
@@ -220,9 +480,16 @@ function decodePublicDoc(rawJson: { fields?: Record<string, Record<string, unkno
     orderId: decodeFsNumber(f.orderId),
     orderCode: decodeFsString(f.orderCode),
     status,
+    osStatus: decodeFsString(f.osStatus) || undefined,
+    expectedDeliveryDate: decodeFsString(f.expectedDeliveryDate) || undefined,
+    createdDateLabel: decodeFsString(f.createdDateLabel) || undefined,
+    technician: decodeFsString(f.technician) || undefined,
     clientName: decodeFsString(f.clientName),
     device: decodeFsString(f.device),
     issue: decodeFsString(f.issue),
+    technicalReport: decodeFsString(f.technicalReport) || undefined,
+    aiExplanation: decodeFsString(f.aiExplanation) || undefined,
+    entryChecklist,
     serviceName: decodeFsString(f.serviceName),
     servicePrice: decodeFsNumber(f.servicePrice),
     partsPrice: decodeFsNumber(f.partsPrice),
@@ -230,18 +497,82 @@ function decodePublicDoc(rawJson: { fields?: Record<string, Record<string, unkno
     deliveryFee: decodeFsNumber(f.deliveryFee),
     discount: decodeFsNumber(f.discount),
     totalAmount: decodeFsNumber(f.totalAmount),
+    paidAmount: f.paidAmount ? decodeFsNumber(f.paidAmount) : 0,
+    signalPaid: f.signalPaid ? decodeFsNumber(f.signalPaid) : 0,
     warrantyDays: decodeFsNumber(f.warrantyDays),
     condExec: decodeFsString(f.condExec),
     warrantyText: decodeFsString(f.warrantyText),
     quoteHash: decodeFsString(f.quoteHash),
     evidencePhotos,
     createdAtMs: decodeFsNumber(f.createdAtMs),
-    createdServerAt: typeof f.createdServerAt?.timestampValue === 'string' ? f.createdServerAt.timestampValue : undefined,
+    updatedAtMs: f.updatedAtMs ? decodeFsNumber(f.updatedAtMs) : undefined,
+    createdServerAt:
+      typeof f.createdServerAt?.timestampValue === 'string'
+        ? f.createdServerAt.timestampValue
+        : undefined,
     signaturePng: decodeFsString(f.signaturePng) || undefined,
     acceptedIp: decodeFsString(f.acceptedIp) || undefined,
     acceptedUserAgent: decodeFsString(f.acceptedUserAgent) || undefined,
     acceptedClientAtMs: f.acceptedClientAtMs ? decodeFsNumber(f.acceptedClientAtMs) : undefined,
-    acceptedServerAt: typeof f.acceptedServerAt?.timestampValue === 'string' ? f.acceptedServerAt.timestampValue : undefined,
+    acceptedServerAt:
+      typeof f.acceptedServerAt?.timestampValue === 'string'
+        ? f.acceptedServerAt.timestampValue
+        : undefined,
+  };
+}
+
+function buildSanitizedOrderTrackingFields(
+  order: ServiceOrder,
+  evidencePhotos: PublicAcceptanceEvidencePhoto[]
+): Record<string, FsValue> {
+  const osStatus = String(order.status || 'Orçamento').slice(0, 40);
+  const expectedDeliveryDate = String(order.expectedDeliveryDate || '').slice(0, 20);
+  const createdDateLabel = (
+    order.createdDate ? formatDateBR(order.createdDate) : order.createdAt || ''
+  ).slice(0, 40);
+  const technician = String(order.technician || '').slice(0, 80);
+  const technicalReport = buildPublicTechnicalReport(order);
+  const aiExplanation = scrubPublicText(order.publicAiSummary || '').slice(0, 2900);
+  const entryChecklist = buildPublicChecklistChips(order);
+  const paidAmount = Math.max(0, Number(order.paidAmount) || 0);
+  const signalPaid = Math.max(0, Number(order.signalPaid) || 0);
+  const updatedAtMs = Date.now();
+
+  return {
+    osStatus: { stringValue: osStatus },
+    expectedDeliveryDate: { stringValue: expectedDeliveryDate },
+    createdDateLabel: { stringValue: createdDateLabel },
+    technician: { stringValue: technician },
+    technicalReport: { stringValue: technicalReport },
+    aiExplanation: { stringValue: aiExplanation },
+    entryChecklist: {
+      arrayValue: {
+        values: entryChecklist.map((ch) => ({
+          mapValue: {
+            fields: {
+              label: { stringValue: ch.label.slice(0, 80) },
+              tone: { stringValue: ch.tone },
+            },
+          },
+        })),
+      },
+    },
+    evidencePhotos: {
+      arrayValue: {
+        values: evidencePhotos.map((ph) => ({
+          mapValue: {
+            fields: {
+              slot: { stringValue: ph.slot },
+              label: { stringValue: ph.label },
+              dataUrl: { stringValue: ph.dataUrl },
+            },
+          },
+        })),
+      },
+    },
+    paidAmount: { doubleValue: paidAmount },
+    signalPaid: { doubleValue: signalPaid },
+    updatedAtMs: { integerValue: String(updatedAtMs) },
   };
 }
 
@@ -268,27 +599,9 @@ export async function publishOrderPublicAcceptance(input: {
   }
 
   const { token: idToken, auth } = await ensureFirebaseIdToken(authState);
+  const evidencePhotos = await collectCompressedPublicPhotos(auth.uid, input.order);
 
-  // Coleta até 4 fotos de evidência do IndexedDB mantendo tamanho seguro (< 600KB no total)
-  const evidencePhotos: PublicAcceptanceEvidencePhoto[] = [];
-  let totalPhotoBytes = 0;
-  for (const slot of ['front', 'back', 'rails', 'dock'] as const) {
-    const mediaId = input.order.evidenceMediaIds?.[slot];
-    if (!mediaId) continue;
-    const rec = await getMediaRecord(auth.uid, mediaId);
-    if (rec && !rec.deleted && rec.dataUrl.startsWith('data:image/')) {
-      if (totalPhotoBytes + rec.dataUrl.length <= 600000) {
-        evidencePhotos.push({
-          slot,
-          label: EVIDENCE_LABELS[slot],
-          dataUrl: rec.dataUrl,
-        });
-        totalPhotoBytes += rec.dataUrl.length;
-      }
-    }
-  }
-
-  // Sanitização estrita LGPD e sigilo comercial (sem CPF, sem custos, sem margens, sem senha/padrão)
+  // Sanitização estrita LGPD e sigilo comercial (sem CPF, sem IMEI completo, sem custos, sem margens, sem senha/padrão)
   const sanitizedItems: PublicAcceptanceLineItem[] = (input.order.extraItems || [])
     .filter((it) => Boolean(it.d && it.d.trim()))
     .slice(0, 50)
@@ -306,14 +619,20 @@ export async function publishOrderPublicAcceptance(input: {
   const totalAmount = calcOrderTotalAmount(input.order);
   const warrantyDays = Math.max(
     0,
-    Math.round(Number(input.order.warrantyDays ?? input.warrantyDays ?? resolveOrderWarrantyDays(input.order.serviceCatalogId, [], input.cfg)) || 90)
+    Math.round(
+      Number(
+        input.order.warrantyDays ??
+          input.warrantyDays ??
+          resolveOrderWarrantyDays(input.order.serviceCatalogId, [], input.cfg)
+      ) || 90
+    )
   );
   const condExec = String(input.cfg.condExec || '').slice(0, 2000);
   const warrantyText = String(
     input.order.clientSuppliedPart ? input.cfg.termoPecaCli : input.cfg.termoGarantia
   ).slice(0, 2000);
   const device = String(input.order.device || 'Aparelho').slice(0, 160);
-  const issue = String(input.order.issue || '').slice(0, 600);
+  const issue = scrubPublicText(input.order.issue || '').slice(0, 600);
   const clientName = String(input.order.clientName || 'Cliente').slice(0, 120);
   const orderCode = String(input.order.code || `#${input.order.id}`).slice(0, 40);
 
@@ -336,6 +655,7 @@ export async function publishOrderPublicAcceptance(input: {
 
   const publicToken = generatePublicToken128();
   const createdAtMs = Date.now();
+  const trackingFields = buildSanitizedOrderTrackingFields(input.order, evidencePhotos);
 
   const fields: Record<string, FsValue> = {
     token: { stringValue: publicToken },
@@ -369,20 +689,8 @@ export async function publishOrderPublicAcceptance(input: {
     condExec: { stringValue: condExec },
     warrantyText: { stringValue: warrantyText },
     quoteHash: { stringValue: quoteHash },
-    evidencePhotos: {
-      arrayValue: {
-        values: evidencePhotos.map((ph) => ({
-          mapValue: {
-            fields: {
-              slot: { stringValue: ph.slot },
-              label: { stringValue: ph.label },
-              dataUrl: { stringValue: ph.dataUrl },
-            },
-          },
-        })),
-      },
-    },
     createdAtMs: { integerValue: String(createdAtMs) },
+    ...trackingFields,
   };
 
   const commitUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
@@ -424,6 +732,68 @@ export async function publishOrderPublicAcceptance(input: {
     url: buildPublicAcceptanceUrl(publicToken, auth.projectId),
     projectId: auth.projectId,
   };
+}
+
+/**
+ * Atualiza automaticamente no Firestore os dados operacionais do documento público já existente
+ * (status da OS, previsão de entrega, técnico, laudo técnico, explicação IA, checklist, fotos comprimidas e valor pago)
+ * SEM alterar o token, o status de aceite ou o `quoteHash` SHA-256 selado.
+ */
+export async function syncOrderPublicAcceptance(input: {
+  order: ServiceOrder;
+}): Promise<{ synced: boolean; reason?: string }> {
+  const token = (input.order.publicAcceptanceToken || '').trim();
+  if (!token) return { synced: false, reason: 'no_token' };
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return { synced: false, reason: 'offline' };
+  }
+
+  const authState = loadAuthState();
+  if (!authState.apiKey || !authState.projectId || !authState.refreshToken || !authState.uid) {
+    return { synced: false, reason: 'unauthenticated' };
+  }
+
+  const { token: idToken, auth } = await ensureFirebaseIdToken(authState);
+  const evidencePhotos = await collectCompressedPublicPhotos(auth.uid, input.order);
+  const trackingFields = buildSanitizedOrderTrackingFields(input.order, evidencePhotos);
+  const fieldPaths = Object.keys(trackingFields);
+
+  const commitUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(
+    auth.projectId
+  )}/databases/(default)/documents:commit`;
+
+  const res = await fetch(commitUrl, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${idToken}`,
+    },
+    body: JSON.stringify({
+      writes: [
+        {
+          currentDocument: { exists: true },
+          update: {
+            name: `projects/${auth.projectId}/databases/(default)/documents/public_aceites/${token}`,
+            fields: trackingFields,
+          },
+          updateMask: {
+            fieldPaths,
+          },
+        },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(
+      res.status === 403
+        ? 'Permissão negada no Firestore ao atualizar acompanhamento público. Publique as novas regras em firestore.rules.'
+        : `Erro ao sincronizar página pública (${res.status}): ${errText.slice(0, 140)}`
+    );
+  }
+
+  return { synced: true };
 }
 
 export async function fetchPublicAcceptanceDoc(

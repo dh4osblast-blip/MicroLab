@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Banknote,
+  Camera,
   Check,
   CheckCircle2,
   ClipboardList,
@@ -72,10 +73,17 @@ import { GeminiOcrButton } from '../components/GeminiOcrButton';
 import { OrderThermalReceipt, runWithThermalPrintMode } from '../components/ThermalReceiptPrint';
 import { buildElectricalCardDetails, buildLocalBenchCopilotFallback } from '../utils/preDiagnosis';
 import { APOSTILA_DEFEITOS } from './DefectsAssistantView';
-import { getCachedMediaDataUrl, getMediaRecord, useOrderMedia } from '../services/mediaStore';
+import {
+  compressEvidenceImage,
+  EvidencePhotoSlot,
+  getCachedMediaDataUrl,
+  getMediaRecord,
+  useOrderMedia,
+} from '../services/mediaStore';
 import {
   fetchPublicAcceptanceDoc,
   publishOrderPublicAcceptance,
+  syncOrderPublicAcceptance,
 } from '../services/publicAcceptance';
 import { loadAuthState } from '../services/firebaseSync';
 import {
@@ -140,6 +148,8 @@ interface OsFormState {
   pedPrev: string;
   pedChegou: boolean;
   returnWarrantyFromId?: number;
+  evidencePhotos?: Partial<Record<EvidencePhotoSlot, string>>;
+  evidencePhotosDirty?: boolean;
 }
 
 const formatNowPtBr = () =>
@@ -248,6 +258,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   const sigCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const sigDrawingRef = useRef(false);
   const [hasDrawnModalSig, setHasDrawnModalSig] = useState(false);
+  const [evidenceError, setEvidenceError] = useState('');
 
   // Confirmação suave para troca de status no inspetor (Pronto / Entregue)
   const [pendingInspectorStatus, setPendingInspectorStatus] = useState<{
@@ -349,7 +360,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       pedPrev: '',
       pedChegou: false,
       returnWarrantyFromId: prefill?.returnWarrantyFromId,
+      evidencePhotos: {},
+      evidencePhotosDirty: false,
     });
+    setEvidenceError('');
     setHasDrawnModalSig(false);
     setFormError('');
     setSoftConfirmWarnings([]);
@@ -393,6 +407,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     const initAt =
       o.clientAcceptanceAt ||
       (initAcceptanceType === 'digital_channel' ? o.acceptedAt || formatNowPtBr() : '');
+
+    const cachedPhotos: Partial<Record<EvidencePhotoSlot, string>> = {};
+    (['front', 'back', 'rails', 'dock'] as const).forEach((slot) => {
+      const fromCache = o.evidenceMediaIds?.[slot]
+        ? getCachedMediaDataUrl(storageUid, o.evidenceMediaIds[slot])
+        : undefined;
+      const val = fromCache || o.evidencePhotos?.[slot];
+      if (val) cachedPhotos[slot] = val;
+    });
 
     setForm({
       editingId: o.id,
@@ -439,7 +462,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       pedPrev: o.pedPrev || '',
       pedChegou: Boolean(o.pedChegou),
       returnWarrantyFromId: o.returnWarrantyFromId,
+      evidencePhotos: cachedPhotos,
+      evidencePhotosDirty: false,
     });
+    setEvidenceError('');
     setHasDrawnModalSig(false);
     setFormError('');
     setSoftConfirmWarnings([]);
@@ -449,24 +475,52 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
 
   useEffect(() => {
     if (!formOpen || !form?.editingId) return;
-    if (form.clientSignatureDataUrl || form.clearClientSignature) return;
     const targetOrder = state.orders.find((o) => o.id === form.editingId);
-    const sigMediaId = targetOrder?.clientSignatureMediaId;
-    if (!sigMediaId) return;
+    if (!targetOrder) return;
     let cancelled = false;
-    getMediaRecord(storageUid, sigMediaId).then((rec) => {
-      if (cancelled || !rec || rec.deleted || !rec.dataUrl) return;
-      setForm((prev) => {
-        if (!prev || prev.editingId !== targetOrder.id || prev.clearClientSignature || prev.clientSignatureDataUrl) {
-          return prev;
-        }
-        return { ...prev, clientSignatureDataUrl: rec.dataUrl };
+
+    const sigMediaId = targetOrder.clientSignatureMediaId;
+    if (sigMediaId && !form.clientSignatureDataUrl && !form.clearClientSignature) {
+      void getMediaRecord(storageUid, sigMediaId).then((rec) => {
+        if (cancelled || !rec || rec.deleted || !rec.dataUrl) return;
+        setForm((prev) => {
+          if (!prev || prev.editingId !== targetOrder.id || prev.clearClientSignature || prev.clientSignatureDataUrl) {
+            return prev;
+          }
+          return { ...prev, clientSignatureDataUrl: rec.dataUrl };
+        });
+      });
+    }
+
+    (['front', 'back', 'rails', 'dock'] as const).forEach((slot) => {
+      const mId = targetOrder.evidenceMediaIds?.[slot];
+      if (!mId || form.evidencePhotos?.[slot] || form.evidencePhotosDirty) return;
+      void getMediaRecord(storageUid, mId).then((rec) => {
+        if (cancelled || !rec || rec.deleted || !rec.dataUrl) return;
+        setForm((prev) => {
+          if (!prev || prev.editingId !== targetOrder.id || prev.evidencePhotosDirty || prev.evidencePhotos?.[slot]) {
+            return prev;
+          }
+          return {
+            ...prev,
+            evidencePhotos: { ...(prev.evidencePhotos || {}), [slot]: rec.dataUrl },
+          };
+        });
       });
     });
+
     return () => {
       cancelled = true;
     };
-  }, [formOpen, form?.editingId, form?.clientSignatureDataUrl, form?.clearClientSignature, state.orders, storageUid]);
+  }, [
+    formOpen,
+    form?.editingId,
+    form?.clientSignatureDataUrl,
+    form?.clearClientSignature,
+    form?.evidencePhotosDirty,
+    state.orders,
+    storageUid,
+  ]);
 
   // Consome osPrefillDraft vindo do Simulador ou Retorno de Garantia
   useEffect(() => {
@@ -694,6 +748,25 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     }
   };
 
+  const triggerAutoPublicSync = async (orderSnapshot: ServiceOrder, showFeedback = true) => {
+    if (!orderSnapshot.publicAcceptanceToken) return;
+    try {
+      const res = await syncOrderPublicAcceptance({ order: orderSnapshot });
+      if (res.synced && showFeedback) {
+        setPublicLinkError('');
+        setPublicLinkFeedback(
+          'Página pública do cliente atualizada automaticamente (SHA-256 preservado).'
+        );
+      }
+    } catch (err) {
+      setPublicLinkError(
+        err instanceof Error
+          ? err.message
+          : 'Não foi possível atualizar a página pública automaticamente.'
+      );
+    }
+  };
+
   const statusColor = (status: OrderStatus) => {
     switch (status) {
       case 'Em reparo':
@@ -880,6 +953,16 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         pedPrev: form.pedPrev,
         pedChegou: form.pedChegou,
         returnWarrantyFromId: form.returnWarrantyFromId,
+        ...(form.evidencePhotosDirty
+          ? {
+              evidencePhotos: {
+                front: form.evidencePhotos?.front || '',
+                back: form.evidencePhotos?.back || '',
+                rails: form.evidencePhotos?.rails || '',
+                dock: form.evidencePhotos?.dock || '',
+              },
+            }
+          : {}),
       },
       volatileSecret:
         form.passcode.trim() || form.patternNodes.length > 0
@@ -889,6 +972,13 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
             }
           : undefined,
     });
+
+    if (saved.publicAcceptanceToken) {
+      const syncPayload: ServiceOrder = form.evidencePhotosDirty
+        ? { ...saved, evidencePhotos: form.evidencePhotos }
+        : saved;
+      void triggerAutoPublicSync(syncPayload);
+    }
 
     onSelectOrder(saved.id);
     setFormOpen(false);
@@ -1009,6 +1099,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       return;
     }
     updateOrderStatus(order.id, nextSt);
+    if (order.publicAcceptanceToken) {
+      void triggerAutoPublicSync({ ...order, status: nextSt });
+    }
   };
 
   const handleOpenReturnWarranty = (o: ServiceOrder) => {
@@ -1214,6 +1307,20 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         modelUsed: res.modelUsed,
         isFallbackModel: res.isFallbackModel,
       });
+      const updatedWithAi = saveServiceOrder({
+        id: o.id,
+        data: {
+          clientId: o.clientId,
+          clientName: o.clientName,
+          device: o.device,
+          issue: o.issue,
+          status: o.status,
+          publicAiSummary: sanitizedBody,
+        },
+      });
+      if (updatedWithAi.publicAcceptanceToken) {
+        void triggerAutoPublicSync(updatedWithAi, false);
+      }
     } catch (err) {
       setAiQuoteError(err instanceof Error ? err.message : 'Falha ao traduzir orçamento via IA.');
     } finally {
@@ -1687,7 +1794,19 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       {!activeOrder.pedChegou && (
                         <button
                           type="button"
-                          onClick={() => markOrderPartArrived(activeOrder.id)}
+                          onClick={() => {
+                            markOrderPartArrived(activeOrder.id);
+                            if (activeOrder.publicAcceptanceToken) {
+                              void triggerAutoPublicSync({
+                                ...activeOrder,
+                                pedChegou: true,
+                                status:
+                                  activeOrder.status === 'Aguardando Peça'
+                                    ? 'Aprovado'
+                                    : activeOrder.status,
+                              });
+                            }
+                          }}
                           className="inline-flex items-center gap-1 rounded-lg bg-[#0056ab] px-2.5 py-1 text-[10px] font-bold text-white hover:bg-[#1b6fd1] cursor-pointer"
                         >
                           <PackageCheck className="w-3 h-3" />
@@ -1862,15 +1981,21 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                             <button
                               type="button"
                               onClick={() => {
-                                appendOrderTechnicalNotes(
-                                  activeOrder.id,
-                                  `[${
-                                    aiCopilotResult.sourceMode === 'local_fallback'
-                                      ? 'Pré-Diagnóstico Offline'
-                                      : 'Copiloto IA'
-                                  }] ${aiCopilotResult.resumoTecnicoOs}`
-                                );
+                                const snippet = `[${
+                                  aiCopilotResult.sourceMode === 'local_fallback'
+                                    ? 'Pré-Diagnóstico Offline'
+                                    : 'Copiloto IA'
+                                }] ${aiCopilotResult.resumoTecnicoOs}`;
+                                appendOrderTechnicalNotes(activeOrder.id, snippet);
                                 setAiCopilotAppended(true);
+                                if (activeOrder.publicAcceptanceToken) {
+                                  void triggerAutoPublicSync({
+                                    ...activeOrder,
+                                    notes: activeOrder.notes
+                                      ? `${activeOrder.notes}\n${snippet}`
+                                      : snippet,
+                                  });
+                                }
                               }}
                               className="rounded-md bg-[#0056ab] text-white px-2 py-1 text-[10px] font-bold hover:bg-[#1b6fd1] cursor-pointer"
                             >
@@ -2103,6 +2228,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                                   className={`w-3 h-3 ${publicLinkChecking ? 'animate-spin' : ''}`}
                                 />
                                 <span>Verificar Aceite</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void triggerAutoPublicSync(activeOrder, true)}
+                                className="inline-flex items-center gap-1 rounded-md border border-[#D9E0EC] bg-[#F3F6FB] px-2 py-1 text-[10px] font-semibold text-[#414752] hover:bg-[#EAF2FD] cursor-pointer"
+                                title="Atualizar status, laudo, previsão e fotos na página do cliente"
+                              >
+                                <RefreshCw className="w-3 h-3" />
+                                <span>Atualizar Página</span>
                               </button>
                             </div>
                           </div>
@@ -2933,6 +3067,122 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                             </button>
                           ))}
                         </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </details>
+
+              {/* Fotos do Aparelho (até 4 evidências para Check-in / Link Público) */}
+              <details className="rounded-xl border border-[#D9E0EC] p-3.5 space-y-2.5">
+                <summary className="text-xs font-bold text-[#091b36] cursor-pointer flex items-center justify-between">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Camera className="w-3.5 h-3.5 text-[#0056ab]" />
+                    <span>Fotos de Evidência do Aparelho (Check-in &amp; Link Público · até 4 fotos)</span>
+                  </span>
+                </summary>
+                {evidenceError && (
+                  <div className="rounded-lg bg-[#FEE2E2] px-2.5 py-1.5 text-[11px] font-semibold text-[#DC2626]">
+                    {evidenceError}
+                  </div>
+                )}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
+                  {(
+                    [
+                      ['front', 'Frontal / Display'],
+                      ['back', 'Traseira & Câmeras'],
+                      ['rails', 'Laterais & Parafusos'],
+                      ['dock', 'Conector & Lacre'],
+                    ] as const
+                  ).map(([slot, label]) => {
+                    const photo = form.evidencePhotos?.[slot];
+                    const inputId = `os-modal-evidence-${slot}`;
+                    return (
+                      <div
+                        key={slot}
+                        className="rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] p-2 flex flex-col justify-between gap-1.5"
+                      >
+                        <input
+                          id={inputId}
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = '';
+                            if (!file) return;
+                            setEvidenceError('');
+                            try {
+                              const { dataUrl } = await compressEvidenceImage(file, 640, 0.65);
+                              setForm((prev) =>
+                                prev
+                                  ? {
+                                      ...prev,
+                                      evidencePhotos: {
+                                        ...(prev.evidencePhotos || {}),
+                                        [slot]: dataUrl,
+                                      },
+                                      evidencePhotosDirty: true,
+                                    }
+                                  : prev
+                              );
+                            } catch (err) {
+                              setEvidenceError(
+                                err instanceof Error
+                                  ? err.message
+                                  : 'Não foi possível processar a imagem.'
+                              );
+                            }
+                          }}
+                        />
+                        <span className="text-[10px] font-semibold text-[#091b36] truncate">
+                          {label}
+                        </span>
+                        {photo ? (
+                          <div className="space-y-1">
+                            <img
+                              src={photo}
+                              alt={label}
+                              className="w-full h-16 object-cover rounded border border-[#D9E0EC]"
+                            />
+                            <div className="flex items-center gap-1">
+                              <label
+                                htmlFor={inputId}
+                                className="flex-1 text-center rounded border border-[#D9E0EC] bg-white py-0.5 text-[10px] font-semibold text-[#0056ab] cursor-pointer"
+                              >
+                                Trocar
+                              </label>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setForm((prev) => {
+                                    if (!prev) return prev;
+                                    const next = { ...(prev.evidencePhotos || {}) };
+                                    delete next[slot];
+                                    return {
+                                      ...prev,
+                                      evidencePhotos: next,
+                                      evidencePhotosDirty: true,
+                                    };
+                                  })
+                                }
+                                className="p-0.5 rounded border border-[#DC2626]/30 bg-white text-[#DC2626] cursor-pointer"
+                                title="Remover foto"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <label
+                            htmlFor={inputId}
+                            className="h-16 rounded border border-dashed border-[#0056ab]/35 bg-white flex flex-col items-center justify-center text-[10px] font-semibold text-[#0056ab] hover:bg-[#EAF2FD] cursor-pointer"
+                          >
+                            <Camera className="w-3.5 h-3.5 mb-0.5" />
+                            <span>Adicionar</span>
+                          </label>
+                        )}
                       </div>
                     );
                   })}
@@ -3897,11 +4147,13 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    updateOrderStatus(
-                      pendingInspectorStatus.order.id,
-                      pendingInspectorStatus.targetStatus
-                    );
+                    const targetOrder = pendingInspectorStatus.order;
+                    const targetStatus = pendingInspectorStatus.targetStatus;
+                    updateOrderStatus(targetOrder.id, targetStatus);
                     setPendingInspectorStatus(null);
+                    if (targetOrder.publicAcceptanceToken) {
+                      void triggerAutoPublicSync({ ...targetOrder, status: targetStatus });
+                    }
                   }}
                   className="flex-1 rounded-xl bg-[#0056ab] py-2.5 text-xs font-bold text-white cursor-pointer"
                 >
@@ -3925,6 +4177,12 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                 const val = Math.max(0, Number(paymentAmount) || 0);
                 if (val <= 0) return;
                 receiveOrderPayment(paymentModalOrder.id, val, paymentMethod);
+                if (paymentModalOrder.publicAcceptanceToken) {
+                  void triggerAutoPublicSync({
+                    ...paymentModalOrder,
+                    paidAmount: Math.round(((paymentModalOrder.paidAmount || 0) + val) * 100) / 100,
+                  });
+                }
                 setPaymentModalOrder(null);
               }}
               onClick={(e) => e.stopPropagation()}
@@ -4006,6 +4264,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   chargeDiag: cancelChargeDiag,
                   refundAmount: Math.max(0, Number(cancelRefund) || 0),
                 });
+                if (cancelModalOrder.publicAcceptanceToken) {
+                  void triggerAutoPublicSync({ ...cancelModalOrder, status: 'Cancelado' });
+                }
                 setCancelModalOrder(null);
               }}
               onClick={(e) => e.stopPropagation()}
