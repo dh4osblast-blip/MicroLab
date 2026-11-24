@@ -668,6 +668,102 @@ function nextTimestamp(): number {
   return lastStampTs;
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => (item === undefined ? 'null' : canonicalJson(item))).join(',')}]`;
+  }
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj)
+    .filter((k) => obj[k] !== undefined)
+    .sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`;
+}
+
+function serializeCfgEntry(key: string, value: unknown): string {
+  if (key === 'labProfile' && value && typeof value === 'object' && !Array.isArray(value)) {
+    const rest = { ...(value as Record<string, unknown>) };
+    delete rest.lastSync;
+    return canonicalJson(rest);
+  }
+  return canonicalJson(value);
+}
+
+/**
+ * Normaliza os hashes de `cfg/*` na hidratação inicial usando canonicalJson,
+ * sem nunca marcar `meta.dirty` (apenas atualiza hashes ausentes ou não canônicos quando não há pendência).
+ */
+export function syncCfgHashesOnHydration(
+  rawState: LabState,
+  uid?: string | null
+): { state: LabState; meta: SyncMetadata } {
+  const meta = loadSyncMetadata(uid);
+  const rawCfg = (rawState.cfg || {}) as unknown as Record<string, unknown>;
+  const cfgTs: Record<string, number> = {
+    ...((rawCfg._ts as Record<string, number> | undefined) || {}),
+  };
+  const nextSingletonTs: Record<string, number> = {
+    ...(rawState.singletonTimestamps || {}),
+  };
+  const nextCfg: Record<string, unknown> = { ...rawCfg, _ts: cfgTs };
+  let metaChanged = false;
+  let stateChanged = false;
+
+  SINGLETON_KEYS.forEach((sk) => {
+    if (sk in nextCfg) {
+      delete nextCfg[sk];
+      stateChanged = true;
+    }
+    const val = rawState[sk];
+    if (val === undefined) return;
+    const key = `cfg/${sk}`;
+    const h = stableHash(serializeCfgEntry(sk, val));
+    if (!meta.dirty[key] && meta.hashes[key] !== h) {
+      meta.hashes[key] = h;
+      metaChanged = true;
+    }
+    const unifiedTs = Number(cfgTs[sk] || nextSingletonTs[sk] || 0);
+    if (unifiedTs > 0 && (cfgTs[sk] !== unifiedTs || nextSingletonTs[sk] !== unifiedTs)) {
+      cfgTs[sk] = unifiedTs;
+      nextSingletonTs[sk] = unifiedTs;
+      stateChanged = true;
+    }
+  });
+
+  Object.keys(nextCfg).forEach((k) => {
+    if (
+      k === '_ts' ||
+      k === 'updatedAt' ||
+      (SINGLETON_KEYS as readonly string[]).includes(k) ||
+      nextCfg[k] === undefined
+    ) {
+      return;
+    }
+    const key = `cfg/${k}`;
+    const h = stableHash(serializeCfgEntry(k, nextCfg[k]));
+    if (!meta.dirty[key] && meta.hashes[key] !== h) {
+      meta.hashes[key] = h;
+      metaChanged = true;
+    }
+  });
+
+  if (metaChanged) {
+    saveSyncMetadata(uid, meta);
+  }
+
+  const nextState: LabState = stateChanged
+    ? {
+        ...rawState,
+        cfg: nextCfg as unknown as LabState['cfg'],
+        singletonTimestamps: nextSingletonTs,
+      }
+    : rawState;
+
+  return { state: nextState, meta };
+}
+
 function serializeEntity(obj: Record<string, unknown>): string {
   const copy: Record<string, unknown> = { ...obj };
   delete copy.updatedAt;
@@ -707,11 +803,12 @@ export function stampLabStateChanges(
       const h = stableHash(serializeEntity(item));
 
       if (colTomb[id] !== undefined) {
+        const revivedTs = Math.max(t, (colTomb[id] || 0) + 1);
         delete colTomb[id];
         meta.hashes[key] = h;
         meta.dirty[key] = 1;
         changed = true;
-        return { ...item, updatedAt: t };
+        return { ...item, updatedAt: revivedTs };
       }
       if (meta.hashes[key] === h) {
         return item;
@@ -755,33 +852,47 @@ export function stampLabStateChanges(
     });
   }
 
-  // Singleton config/balances/profile blocks
-  SINGLETON_KEYS.forEach((sk) => {
-    const val = nextState[sk];
-    const key = `cfg/${sk}`;
-    const h = stableHash(JSON.stringify(val));
-    if (meta.hashes[key] !== h) {
-      if (meta.hashes[key] === undefined && (nextState.singletonTimestamps?.[sk] || 0) > 0) {
-        meta.hashes[key] = h;
-      } else {
-        nextState.singletonTimestamps = {
-          ...(nextState.singletonTimestamps || {}),
-          [sk]: t,
-        };
-        meta.hashes[key] = h;
-        meta.dirty[key] = 1;
-        changed = true;
-      }
-    }
-  });
-
-  // Per-key cfg sync (matching v17 db.cfg + cfg._ts)
+  // Per-key cfg sync + singleton config/balances/profile blocks (timestamp unificado em cfg._ts)
   const rawCfg = (nextState.cfg || {}) as unknown as Record<string, unknown>;
   const cfgTs: Record<string, number> = {
     ...((rawCfg._ts as Record<string, number> | undefined) || {}),
   };
+  const nextSingletonTs: Record<string, number> = {
+    ...(nextState.singletonTimestamps || {}),
+  };
   let cfgUpdatedAt = typeof rawCfg.updatedAt === 'number' ? rawCfg.updatedAt : 0;
   const nextCfg: Record<string, unknown> = { ...rawCfg, _ts: cfgTs };
+
+  SINGLETON_KEYS.forEach((sk) => {
+    delete nextCfg[sk];
+    const val = nextState[sk];
+    if (val === undefined) return;
+    const key = `cfg/${sk}`;
+    const h = stableHash(serializeCfgEntry(sk, val));
+    const existingTs = Number(cfgTs[sk] || nextSingletonTs[sk] || 0);
+    if (meta.hashes[key] !== h) {
+      if (meta.hashes[key] === undefined && existingTs > 0) {
+        cfgTs[sk] = existingTs;
+        nextSingletonTs[sk] = existingTs;
+        meta.hashes[key] = h;
+        changed = true;
+      } else {
+        cfgTs[sk] = t;
+        nextSingletonTs[sk] = t;
+        cfgUpdatedAt = Math.max(cfgUpdatedAt, t);
+        meta.hashes[key] = h;
+        meta.dirty[key] = 1;
+        changed = true;
+      }
+    } else if (existingTs === 0) {
+      cfgTs[sk] = t;
+      nextSingletonTs[sk] = t;
+    } else if (cfgTs[sk] !== existingTs || nextSingletonTs[sk] !== existingTs) {
+      cfgTs[sk] = existingTs;
+      nextSingletonTs[sk] = existingTs;
+    }
+  });
+  nextState.singletonTimestamps = nextSingletonTs;
 
   Object.keys(nextCfg).forEach((k) => {
     if (
@@ -793,14 +904,19 @@ export function stampLabStateChanges(
       return;
     }
     const key = `cfg/${k}`;
-    const h = stableHash(JSON.stringify(nextCfg[k]));
-    if (meta.hashes[key] === h) return;
+    const h = stableHash(serializeCfgEntry(k, nextCfg[k]));
+    if (meta.hashes[key] === h) {
+      if (!(cfgTs[k] > 0)) {
+        cfgTs[k] = t;
+      }
+      return;
+    }
     if (meta.hashes[key] === undefined && (cfgTs[k] || 0) > 0) {
       meta.hashes[key] = h;
       return;
     }
     cfgTs[k] = t;
-    cfgUpdatedAt = t;
+    cfgUpdatedAt = Math.max(cfgUpdatedAt, t);
     meta.hashes[key] = h;
     meta.dirty[key] = 1;
     changed = true;
@@ -813,7 +929,7 @@ export function stampLabStateChanges(
     if (nextCfg[k] === undefined) {
       meta.hashes[key] = '-';
       cfgTs[k] = t;
-      cfgUpdatedAt = t;
+      cfgUpdatedAt = Math.max(cfgUpdatedAt, t);
       meta.dirty[key] = 1;
       changed = true;
     }
@@ -826,8 +942,9 @@ export function stampLabStateChanges(
   const counters = nextState.counters || { nextOrderNumber: 0, nextSaleNumber: 0, nextPurchaseNumber: 0 };
   COUNTER_KEYS.forEach((ck) => {
     const curVal = Number(counters[ck]) || 0;
-    const prevVal = Number(meta.cnt[ck]) || 0;
-    if (curVal > prevVal) {
+    const hasPrev = meta.cnt[ck] !== undefined;
+    const prevVal = hasPrev ? Number(meta.cnt[ck]) || 0 : 0;
+    if (hasPrev ? curVal !== prevVal : curVal > 0) {
       meta.dirty[`cnt/${ck}`] = 1;
       changed = true;
     }
@@ -1133,6 +1250,9 @@ export async function runFirestoreSync(
       if (f.l === 'cnt') {
         const ck = f.id as (typeof COUNTER_KEYS)[number];
         if (!COUNTER_KEYS.includes(ck)) continue;
+        if (meta.dirty[`cnt/${ck}`]) {
+          continue;
+        }
         meta.cnt[ck] = f.u;
         const counters = state.counters || { nextOrderNumber: 0, nextSaleNumber: 0, nextPurchaseNumber: 0 };
         if (f.u > (counters[ck] || 0)) {
@@ -1146,27 +1266,48 @@ export async function runFirestoreSync(
         const key = `cfg/${f.id}`;
         if ((SINGLETON_KEYS as readonly string[]).includes(f.id)) {
           const sk = f.id as (typeof SINGLETON_KEYS)[number];
-          const localTs = state.singletonTimestamps?.[sk] || 0;
+          const cfgObj = { ...((state.cfg || {}) as unknown as Record<string, unknown>) };
+          const cfgTs = { ...((cfgObj._ts as Record<string, number> | undefined) || {}) };
+          const localTs = Number(cfgTs[sk] || state.singletonTimestamps?.[sk] || 0);
           if (f.u < localTs) {
             meta.dirty[key] = 1;
             continue;
           }
-          const curJson = JSON.stringify(state[sk]);
-          if (f.u === localTs && !f.d && curJson === f.j) continue;
+          const curJson = serializeCfgEntry(sk, state[sk]);
+          let remoteCanonical = '';
+          let parsedVal: unknown;
           if (!f.d) {
             try {
-              const parsedVal = JSON.parse(f.j);
-              state = {
-                ...state,
-                [sk]: parsedVal,
-                singletonTimestamps: { ...(state.singletonTimestamps || {}), [sk]: f.u },
-              };
-              meta.hashes[key] = stableHash(JSON.stringify(parsedVal));
-              delete meta.dirty[key];
-              changed = true;
+              parsedVal = JSON.parse(f.j);
+              remoteCanonical = serializeCfgEntry(sk, parsedVal);
             } catch {
-              // Skip malformed JSON
+              continue;
             }
+          }
+          if (f.u === localTs && !f.d && curJson === remoteCanonical) {
+            delete meta.dirty[key];
+            continue;
+          }
+          if (!f.d && parsedVal && typeof parsedVal === 'object') {
+            const nextVal =
+              sk === 'labProfile'
+                ? {
+                    ...(parsedVal as LabState['labProfile']),
+                    lastSync: state.labProfile?.lastSync || 'Offline (Local)',
+                  }
+                : parsedVal;
+            cfgTs[sk] = f.u;
+            cfgObj._ts = cfgTs;
+            delete cfgObj[sk];
+            state = {
+              ...state,
+              [sk]: nextVal,
+              cfg: cfgObj as unknown as LabState['cfg'],
+              singletonTimestamps: { ...(state.singletonTimestamps || {}), [sk]: f.u },
+            };
+            meta.hashes[key] = stableHash(serializeCfgEntry(sk, nextVal));
+            delete meta.dirty[key];
+            if (curJson !== remoteCanonical) changed = true;
           }
           continue;
         }
@@ -1177,24 +1318,29 @@ export async function runFirestoreSync(
         const cfgObj = { ...((state.cfg || {}) as unknown as Record<string, unknown>) };
         const cfgTs = { ...((cfgObj._ts as Record<string, number> | undefined) || {}) };
         const localTs = cfgTs[k] || 0;
+        let parsedVal: unknown;
+        let remoteCanonical = '';
+        if (!f.d) {
+          try {
+            parsedVal = JSON.parse(f.j);
+            remoteCanonical = serializeCfgEntry(k, parsedVal);
+          } catch {
+            continue;
+          }
+        }
         const same = f.d
           ? cfgObj[k] === undefined
-          : cfgObj[k] !== undefined && JSON.stringify(cfgObj[k]) === f.j;
+          : cfgObj[k] !== undefined && serializeCfgEntry(k, cfgObj[k]) === remoteCanonical;
 
         if (f.u < localTs) {
           meta.dirty[key] = 1;
           continue;
         }
-        if (f.u === localTs && same) continue;
-
-        let parsedVal: unknown;
-        if (!f.d) {
-          try {
-            parsedVal = JSON.parse(f.j);
-          } catch {
-            continue;
-          }
+        if (f.u === localTs && same) {
+          delete meta.dirty[key];
+          continue;
         }
+
         if (f.d) delete cfgObj[k];
         else cfgObj[k] = parsedVal;
         cfgTs[k] = f.u;
@@ -1204,7 +1350,7 @@ export async function runFirestoreSync(
           ...state,
           cfg: cfgObj as unknown as LabState['cfg'],
         };
-        meta.hashes[key] = f.d ? '-' : stableHash(JSON.stringify(cfgObj[k]));
+        meta.hashes[key] = f.d ? '-' : stableHash(serializeCfgEntry(k, cfgObj[k]));
         delete meta.dirty[key];
         if (!same) changed = true;
         continue;
@@ -1223,7 +1369,7 @@ export async function runFirestoreSync(
         ? colTomb[f.id]
         : -1;
 
-      if (f.u < localTs) {
+      if (f.u < localTs || (!f.d && !localObj && colTomb[f.id] !== undefined && f.u <= colTomb[f.id])) {
         meta.dirty[key] = 1;
         continue;
       }
@@ -1236,7 +1382,7 @@ export async function runFirestoreSync(
           arr.splice(idx, 1);
           changed = true;
         }
-        colTomb[f.id] = f.u;
+        colTomb[f.id] = Math.max(colTomb[f.id] || 0, f.u);
         delete meta.hashes[key];
       } else {
         try {
@@ -1368,17 +1514,20 @@ export async function runFirestoreSync(
       return { l, id, u: Number(counters[id as (typeof COUNTER_KEYS)[number]]) || 0, d: false, j: '' };
     }
     if (l === 'cfg') {
+      const cfgObj = (state.cfg || {}) as unknown as Record<string, unknown>;
+      const cfgTs = (cfgObj._ts as Record<string, number> | undefined) || {};
       if ((SINGLETON_KEYS as readonly string[]).includes(id)) {
         const sk = id as (typeof SINGLETON_KEYS)[number];
         const val = state[sk];
-        const u = state.singletonTimestamps?.[sk] || 0;
-        return { l, id, u, d: false, j: JSON.stringify(val) };
+        const u = Number(cfgTs[sk] || state.singletonTimestamps?.[sk] || 0);
+        if (val === undefined) {
+          return { l, id, u, d: true, j: '' };
+        }
+        return { l, id, u, d: false, j: serializeCfgEntry(sk, val) };
       }
-      const cfgObj = (state.cfg || {}) as unknown as Record<string, unknown>;
-      const cfgTs = (cfgObj._ts as Record<string, number> | undefined) || {};
-      const u = cfgTs[id] || 0;
+      const u = Number(cfgTs[id] || 0);
       return cfgObj[id] !== undefined
-        ? { l, id, u, d: false, j: JSON.stringify(cfgObj[id]) }
+        ? { l, id, u, d: false, j: serializeCfgEntry(id, cfgObj[id]) }
         : { l, id, u, d: true, j: '' };
     }
     const col = l as CollectionKey;

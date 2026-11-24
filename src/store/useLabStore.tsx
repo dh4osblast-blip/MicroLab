@@ -102,6 +102,7 @@ import {
   saveAuthState,
   saveSyncMetadata,
   stampLabStateChanges,
+  syncCfgHashesOnHydration,
 } from '../services/firebaseSync';
 import {
   MediaSlot,
@@ -597,6 +598,10 @@ function hydrateLabState(
     thermalWidth: rawCfg.thermalWidth === '58mm' ? '58mm' : '80mm',
     _ts: rawCfg._ts && typeof rawCfg._ts === 'object' ? { ...rawCfg._ts } : {},
   };
+  const cfgRecord = mergedCfg as unknown as Record<string, unknown>;
+  delete cfgRecord.interBalances;
+  delete cfgRecord.budgetParams;
+  delete cfgRecord.labProfile;
 
   const hydratedFixos: FixedExpenseItem[] = Array.isArray(raw.fixos)
     ? raw.fixos
@@ -687,7 +692,7 @@ function loadStateForUid(uid?: string | null): LabState {
           // Ignore quota
         }
       }
-      return withFixos;
+      return syncCfgHashesOnHydration(withFixos, cleanUid).state;
     }
     // Se unauthenticated ('local') e ainda existe a chave legada v18, migra sanitizada sem manter passcodes
     if (!uid) {
@@ -695,15 +700,16 @@ function loadStateForUid(uid?: string | null): LabState {
       if (legacy) {
         const parsed = hydrateLabState(JSON.parse(legacy) as Partial<LabState>, cleanUid);
         const withFixos = applyDueFixedExpenses(parsed).state;
-        localStorage.setItem(targetKey, JSON.stringify(withFixos));
+        const normalized = syncCfgHashesOnHydration(withFixos, cleanUid).state;
+        localStorage.setItem(targetKey, JSON.stringify(normalized));
         localStorage.removeItem(LEGACY_DB_KEY);
-        return withFixos;
+        return normalized;
       }
     }
   } catch {
     // Fallback to initial state
   }
-  return applyDueFixedExpenses(createInitialLabState()).state;
+  return syncCfgHashesOnHydration(applyDueFixedExpenses(createInitialLabState()).state, cleanUid).state;
 }
 
 interface LabContextValue {
@@ -890,6 +896,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const syncTimerRef = useRef<number | null>(null);
   const idleTimerRef = useRef<number | null>(null);
   const busyRef = useRef(false);
+  const pendingResyncRef = useRef(false);
 
   // Persist current UID's sanitized state & stamp changes
   useEffect(() => {
@@ -903,18 +910,45 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Ignore quota errors
     }
     setPendingKeys(Object.keys(stamped.meta.dirty));
+    const tombChanged =
+      JSON.stringify(stamped.state.tombstones || {}) !== JSON.stringify(state.tombstones || {});
+    const cfgTsChanged =
+      JSON.stringify(stamped.state.cfg?._ts || {}) !== JSON.stringify(state.cfg?._ts || {});
+    const singletonTsChanged =
+      JSON.stringify(stamped.state.singletonTimestamps || {}) !==
+      JSON.stringify(state.singletonTimestamps || {});
+
+    if (tombChanged || cfgTsChanged || singletonTsChanged) {
+      setState((prev) => ({
+        ...prev,
+        ...(tombChanged ? { tombstones: stamped.state.tombstones } : {}),
+        ...(singletonTsChanged ? { singletonTimestamps: stamped.state.singletonTimestamps } : {}),
+        ...(cfgTsChanged
+          ? {
+              cfg: {
+                ...prev.cfg,
+                _ts: stamped.state.cfg?._ts || prev.cfg._ts || {},
+                ...(stamped.state.cfg?.updatedAt ? { updatedAt: stamped.state.cfg.updatedAt } : {}),
+              },
+            }
+          : {}),
+      }));
+    }
   }, [state, auth.uid]);
 
   const executeCloudSync = useCallback(async (): Promise<boolean> => {
     const currentAuth = authRef.current;
     if (
-      busyRef.current ||
       !currentAuth.apiKey ||
       !currentAuth.projectId ||
       !currentAuth.refreshToken ||
       !currentAuth.uid ||
       (typeof navigator !== 'undefined' && navigator.onLine === false)
     ) {
+      return false;
+    }
+    if (busyRef.current) {
+      pendingResyncRef.current = true;
       return false;
     }
 
@@ -954,6 +988,12 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } finally {
       busyRef.current = false;
       setSyncBusy(false);
+      if (pendingResyncRef.current) {
+        pendingResyncRef.current = false;
+        window.setTimeout(() => {
+          void executeCloudSync();
+        }, 150);
+      }
     }
   }, []);
 
@@ -1360,13 +1400,36 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   };
 
+  const getOrderNumericNumber = (o: ServiceOrder): number => {
+    const legacyN = (o as unknown as { n?: number }).n;
+    if (typeof legacyN === 'number' && Number.isFinite(legacyN) && legacyN > 0) {
+      return Math.floor(legacyN);
+    }
+    const codeDigits = String(o.code || '').replace(/\D+/g, '');
+    if (codeDigits) {
+      const parsed = parseInt(codeDigits, 10);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+    return Number(o.id) > 0 ? Math.floor(Number(o.id)) : 0;
+  };
+
+  const computeNextOrderNumber = (orders: ServiceOrder[]): number => {
+    const maxExisting = orders.reduce(
+      (max, o) => Math.max(max, getOrderNumericNumber(o), Number(o.id) || 0),
+      0
+    );
+    return maxExisting + 1;
+  };
+
   const addOrder = (orderInput: Omit<ServiceOrder, 'id' | 'code' | 'createdAt'>): ServiceOrder => {
     const cleanInput = { ...(orderInput as unknown as Record<string, unknown>) };
     delete cleanInput.passcode;
     delete cleanInput.patternNodes;
 
-    const maxId = stateRef.current.orders.reduce((max, o) => Math.max(max, o.id), 0);
-    const newId = Math.max(maxId, stateRef.current.counters?.nextOrderNumber || 0) + 1;
+    const newId = computeNextOrderNumber(stateRef.current.orders);
+    const activeUid = authRef.current.uid || '';
+    const existingTombTs = stateRef.current.tombstones?.orders?.[String(newId)] || 0;
+    const nowTs = Math.max(Date.now(), existingTombTs + 1000);
     const timeStr = nowClockStr();
     const today = todayIsoLocal();
     const eff = calcEffectivePricingFromConfig(stateRef.current.cfg, stateRef.current.fixos);
@@ -1390,19 +1453,29 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       snapDirectCost: snapCd,
       snapTaxRate: baseData.snapTaxRate ?? eff.totalRetentionPct / 100,
       snapHourlyRate: baseData.snapHourlyRate ?? eff.hourlyRate,
-      updatedAt: Date.now(),
+      updatedAt: nowTs,
     };
-    setState((prev) =>
-      reconcileDerivedFromCfg({
+
+    const syncMeta = loadSyncMetadata(activeUid);
+    syncMeta.dirty[`orders/${newId}`] = 1;
+    syncMeta.dirty['cnt/nextOrderNumber'] = 1;
+    saveSyncMetadata(activeUid, syncMeta);
+    setPendingKeys(Object.keys(syncMeta.dirty));
+
+    setState((prev) => {
+      const nextTombOrders = { ...(prev.tombstones?.orders || {}) };
+      delete nextTombOrders[String(newId)];
+      return reconcileDerivedFromCfg({
         ...prev,
         orders: [newOrder, ...prev.orders],
+        tombstones: { ...(prev.tombstones || {}), orders: nextTombOrders },
         counters: {
           nextOrderNumber: newId,
           nextSaleNumber: prev.counters?.nextSaleNumber || 0,
           nextPurchaseNumber: prev.counters?.nextPurchaseNumber || 0,
         },
-      })
-    );
+      });
+    });
     scheduleCloudSync(3500);
     return newOrder;
   };
@@ -1426,12 +1499,12 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const prevSnapshot = stateRef.current;
     const activeUid = authRef.current.uid || '';
     const o0 = id ? prevSnapshot.orders.find((x) => x.id === id) : undefined;
-    const maxId = prevSnapshot.orders.reduce((max, o) => Math.max(max, o.id), 0);
-    const targetId = o0 ? o0.id : Math.max(maxId, prevSnapshot.counters?.nextOrderNumber || 0) + 1;
+    const targetId = o0 ? o0.id : computeNextOrderNumber(prevSnapshot.orders);
     const code = o0 ? o0.code : `#${targetId}`;
     const today = todayIsoLocal();
     const timeStr = nowClockStr();
-    const nowTs = Date.now();
+    const existingTombTs = prevSnapshot.tombstones?.orders?.[String(targetId)] || 0;
+    const nowTs = Math.max(Date.now(), existingTombTs + 1000);
 
     const pcli = Boolean(data.clientSuppliedPart);
     const partCost = pcli ? 0 : Math.max(0, Number(data.partCost) || 0);
@@ -1751,12 +1824,20 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         savedOrder.stockSnapshot = undefined;
       }
 
+      const nextTombOrders = { ...(prev.tombstones?.orders || {}) };
+      if (!o0) {
+        delete nextTombOrders[String(targetId)];
+      }
+
       let nextState: LabState = {
         ...prev,
         parts: nextParts,
         orders: o0
           ? prev.orders.map((x) => (x.id === targetId ? savedOrder : x))
           : [savedOrder, ...prev.orders],
+        tombstones: o0
+          ? prev.tombstones
+          : { ...(prev.tombstones || {}), orders: nextTombOrders },
         counters: o0
           ? prev.counters
           : {
@@ -2059,6 +2140,8 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     clearVolatileSecret(orderId);
     const activeUid = authRef.current.uid || '';
     const targetToRemove = stateRef.current.orders.find((o) => o.id === orderId);
+    const deletionTs = Math.max(Date.now(), (targetToRemove?.updatedAt || 0) + 1000);
+
     if (targetToRemove) {
       const mediaEntries: Array<{ id: string; slot: MediaSlot }> = [
         ...(['front', 'back', 'rails', 'dock'] as const)
@@ -2068,46 +2151,108 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ? [{ id: targetToRemove.clientSignatureMediaId, slot: 'clientSig' as MediaSlot }]
           : []),
       ];
-      if (mediaEntries.length > 0) {
-        const syncMeta = loadSyncMetadata(activeUid);
-        const ts = Date.now();
-        mediaEntries.forEach(({ id: mid, slot }) => {
-          void markMediaRecordDeleted(activeUid, mid, orderId, slot, ts);
-          syncMeta.dirty[`media/${mid}`] = 1;
-        });
-        saveSyncMetadata(activeUid, syncMeta);
-        setPendingKeys(Object.keys(syncMeta.dirty));
+      const syncMeta = loadSyncMetadata(activeUid);
+      mediaEntries.forEach(({ id: mid, slot }) => {
+        void markMediaRecordDeleted(activeUid, mid, orderId, slot, deletionTs);
+        syncMeta.dirty[`media/${mid}`] = 1;
+      });
+
+      const orderKey = `orders/${orderId}`;
+      delete syncMeta.hashes[orderKey];
+      syncMeta.dirty[orderKey] = 1;
+
+      const linkedTxs = stateRef.current.transactions.filter(
+        (tx) =>
+          tx.orderId === orderId ||
+          tx.tag === `OS ${targetToRemove.code}` ||
+          (tx.title && tx.title.includes(targetToRemove.code))
+      );
+      linkedTxs.forEach((tx) => {
+        const txKey = `transactions/${tx.id}`;
+        delete syncMeta.hashes[txKey];
+        syncMeta.dirty[txKey] = 1;
+      });
+
+      const remainingBeforeSet = stateRef.current.orders.filter((o) => o.id !== orderId);
+      const removedNum = getOrderNumericNumber(targetToRemove);
+      const maxBefore = stateRef.current.orders.reduce(
+        (mx, o) => Math.max(mx, getOrderNumericNumber(o)),
+        0
+      );
+      if (removedNum >= maxBefore) {
+        const maxAfter = remainingBeforeSet.reduce(
+          (mx, o) => Math.max(mx, getOrderNumericNumber(o)),
+          0
+        );
+        syncMeta.dirty['cnt/nextOrderNumber'] = 1;
+        if (syncMeta.cnt.nextOrderNumber === undefined || syncMeta.cnt.nextOrderNumber !== maxAfter) {
+          // Mantém cnt/nextOrderNumber marcado como dirty para enviar o recuo no próximo PUSH
+          syncMeta.dirty['cnt/nextOrderNumber'] = 1;
+        }
       }
+
+      saveSyncMetadata(activeUid, syncMeta);
+      setPendingKeys(Object.keys(syncMeta.dirty));
     }
 
     setState((prev) => {
       const target = prev.orders.find((o) => o.id === orderId);
       if (!target) return prev;
+      const targetDelTs = Math.max(deletionTs, (target.updatedAt || 0) + 1000);
+
       let nextParts = prev.parts;
       if (target.stockDeducted) {
         const snap = target.stockSnapshot || buildOrderStockSnapshot(target, prev.parts);
         nextParts = applyStockSnapshotToParts(nextParts, snap, 1);
       }
 
-      const linkedIds = new Set(
-        prev.transactions
-          .filter(
-            (tx) =>
-              tx.orderId === orderId ||
-              tx.tag === `OS ${target.code}` ||
-              (tx.title && tx.title.includes(target.code))
-          )
-          .map((tx) => tx.id)
+      const linkedTxs = prev.transactions.filter(
+        (tx) =>
+          tx.orderId === orderId ||
+          tx.tag === `OS ${target.code}` ||
+          (tx.title && tx.title.includes(target.code))
       );
+      const linkedIds = new Set(linkedTxs.map((tx) => tx.id));
+
+      const remainingOrders = prev.orders.filter((o) => o.id !== orderId);
+      const removedNum = getOrderNumericNumber(target);
+      const maxBefore = prev.orders.reduce((mx, o) => Math.max(mx, getOrderNumericNumber(o)), 0);
+      const maxAfter = remainingOrders.reduce(
+        (mx, o) => Math.max(mx, getOrderNumericNumber(o)),
+        0
+      );
+      const nextOrderNumber =
+        removedNum >= maxBefore
+          ? maxAfter
+          : Math.max(maxAfter, prev.counters?.nextOrderNumber || 0);
+
+      const nextTombOrders = {
+        ...(prev.tombstones?.orders || {}),
+        [String(orderId)]: targetDelTs,
+      };
+      const nextTombTx = { ...(prev.tombstones?.transactions || {}) };
+      linkedTxs.forEach((tx) => {
+        nextTombTx[tx.id] = Math.max(targetDelTs, (tx.updatedAt || 0) + 1000);
+      });
 
       return reconcileDerivedFromCfg({
         ...prev,
         parts: nextParts,
-        orders: prev.orders.filter((o) => o.id !== orderId),
+        orders: remainingOrders,
         transactions: prev.transactions.filter((tx) => !linkedIds.has(tx.id)),
+        tombstones: {
+          ...(prev.tombstones || {}),
+          orders: nextTombOrders,
+          transactions: nextTombTx,
+        },
+        counters: {
+          nextOrderNumber,
+          nextSaleNumber: prev.counters?.nextSaleNumber || 0,
+          nextPurchaseNumber: prev.counters?.nextPurchaseNumber || 0,
+        },
       });
     });
-    scheduleCloudSync(2500);
+    scheduleCloudSync(200);
     return { ok: true };
   };
 
