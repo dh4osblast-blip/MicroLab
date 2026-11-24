@@ -51,7 +51,7 @@ interface NavGroup {
 export const MicroLabLogo: React.FC<{ dark?: boolean }> = ({ dark = false }) => (
   <div className="flex items-center gap-2.5">
     <img
-      src="./pwa-192x192.png"
+      src="/pwa-192x192.png"
       alt="MicroLab OS"
       className="w-9 h-9 rounded-xl object-cover shadow-sm shrink-0"
     />

@@ -236,7 +236,7 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
         <header className="rounded-2xl bg-[#091b36] text-white p-5 shadow-sm flex items-center justify-between gap-3">
           <div className="flex items-center gap-3 min-w-0">
             <img
-              src="./pwa-192x192.png"
+              src="/pwa-192x192.png"
               alt="MicroLab"
               className="w-11 h-11 rounded-xl object-cover border border-white/20 shrink-0"
             />

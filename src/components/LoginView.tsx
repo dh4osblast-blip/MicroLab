@@ -116,7 +116,7 @@ export const LoginView: React.FC = () => {
         {/* Branding Header with Official Logo */}
         <div className="flex flex-col items-center text-center space-y-2">
           <img
-            src="./pwa-192x192.png"
+            src="/pwa-192x192.png"
             alt="MicroLab OS"
             className="w-16 h-16 rounded-2xl object-cover shadow-md border border-[#D9E0EC]"
           />

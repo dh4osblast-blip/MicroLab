@@ -4274,7 +4274,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
           <div className="flex items-center justify-between border-b-2 border-black pb-1.5 mb-1.5">
             <div className="flex items-center gap-2.5">
               <img
-                src="./pwa-192x192.png"
+                src="/pwa-192x192.png"
                 alt="MicroLab"
                 className="w-9 h-9 rounded-md object-cover shrink-0 border border-black/20"
               />

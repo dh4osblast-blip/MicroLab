@@ -7,7 +7,7 @@ import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
-    base: './',
+    base: '/',
     plugins: [
       react(),
       tailwindcss(),
@@ -15,7 +15,7 @@ export default defineConfig(() => {
         registerType: 'prompt',
         includeAssets: ['apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
         manifest: {
-          id: './',
+          id: '/',
           name: 'MicroLab OS — Bancada & Gestão Técnica',
           short_name: 'MicroLab OS',
           description: 'PWA offline-first de gestão laboratorial, OS, agenda de bancada, PDV, financeiro Inter e telemetria ZK-SK150C.',
@@ -23,25 +23,25 @@ export default defineConfig(() => {
           background_color: '#F3F6FB',
           display: 'standalone',
           orientation: 'any',
-          start_url: './',
-          scope: './',
+          start_url: '/',
+          scope: '/',
           lang: 'pt-BR',
           categories: ['business', 'productivity', 'utilities'],
           icons: [
             {
-              src: './pwa-192x192.png',
+              src: '/pwa-192x192.png',
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: './pwa-512x512.png',
+              src: '/pwa-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: './pwa-maskable-512x512.png',
+              src: '/pwa-maskable-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',

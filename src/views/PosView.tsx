@@ -917,7 +917,7 @@ export const PosView: React.FC = () => {
         <div className="flex items-start justify-between border-b-2 border-black pb-2.5 mb-3">
           <div className="flex items-center gap-2.5">
             <img
-              src="./pwa-192x192.png"
+              src="/pwa-192x192.png"
               alt="MicroLab"
               className="w-10 h-10 rounded-lg object-cover shrink-0 border border-black/20"
             />

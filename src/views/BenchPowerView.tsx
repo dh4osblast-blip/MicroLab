@@ -2202,7 +2202,7 @@ export const BenchPowerView: React.FC = () => {
           <div className="flex items-start justify-between border-b-2 border-[#091b36] pb-3">
             <div className="flex items-center gap-3">
               <img
-                src={state.cfg.logoL || './pwa-192x192.png'}
+                src={state.cfg.logoL || '/pwa-192x192.png'}
                 alt="MicroLab"
                 className="w-12 h-12 rounded-lg object-contain"
               />
