@@ -1,5 +1,11 @@
 import React from 'react';
-import { LabConfig, SaleRecord, ServiceOrder } from '../types/lab';
+import {
+  LabConfig,
+  SaleRecord,
+  ServiceOrder,
+  formatOrderNoteShortDate,
+  getOrderNotesList,
+} from '../types/lab';
 import {
   APP_VERSION_TAG,
   calcOrderTotalAmount,
@@ -133,6 +139,26 @@ export const OrderThermalReceipt: React.FC<OrderThermalReceiptProps> = ({
           </div>
         )}
       </div>
+
+      {/* Technical Notes Blocks */}
+      {(() => {
+        const notesList = getOrderNotesList(order);
+        if (notesList.length === 0) return null;
+        return (
+          <div className="border-b border-dashed border-black pb-1.5 mb-1.5 space-y-0.5">
+            <div className="font-bold uppercase">NOTAS TÉCNICAS</div>
+            {notesList.map((entry) => {
+              const dt = formatOrderNoteShortDate(entry.createdAt);
+              return (
+                <div key={entry.id} className="leading-snug">
+                  • {dt ? `[${dt}] ` : ''}
+                  {entry.text}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {/* LGPD Pattern 3x3 Mini SVG (Volatile RAM only) */}
       {(volatilePatternNodes?.length || order.hasPasscode) && (

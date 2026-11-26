@@ -14,7 +14,18 @@ import {
   UserCheck,
   Zap,
 } from 'lucide-react';
-import { DeviceCategory, OrderStatus, OrderTriage, RouteId, ServiceOrder } from '../types/lab';
+import {
+  DeviceCategory,
+  OrderNoteEntry,
+  OrderStatus,
+  OrderTriage,
+  RouteId,
+  ServiceOrder,
+  consolidateOrderNotesText,
+  createOrderNoteEntry,
+  formatOrderNoteShortDate,
+  getOrderNotesList,
+} from '../types/lab';
 import { formatBRL, useLabStore } from '../store/useLabStore';
 import {
   ENTRY_CHECKLIST_ITEMS,
@@ -293,14 +304,29 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
     const recordedAcceptanceAt =
       acceptanceType === 'digital_channel' ? acceptanceAt.trim() || formatNowPtBr() : undefined;
 
-    const acceptanceSummary =
-      acceptanceType === 'digital_channel'
-        ? `Check-in registrado com inspeção visual; aceite confirmado via ${acceptanceChannel} em ${recordedAcceptanceAt}.`
-        : acceptanceType === 'screen_signature' && clientSignatureDataUrl
-        ? 'Check-in registrado com inspeção visual e assinatura digital do cliente coletada na tela.'
-        : acceptanceType === 'screen_signature'
-        ? 'Check-in registrado com inspeção visual; assinatura na tela sem traço anexado.'
-        : 'Check-in registrado com inspeção visual; assinatura do cliente prevista na via impressa (balcão).';
+    const checkInAuthor = technician.trim() || defaultTechName;
+    const nowIso = new Date().toISOString();
+    const checkInNotesList: OrderNoteEntry[] = [
+      createOrderNoteEntry(
+        'Check-in registrado com inspeção visual de entrada.',
+        'checkin',
+        checkInAuthor,
+        nowIso
+      ),
+      createOrderNoteEntry(
+        acceptanceType === 'digital_channel'
+          ? `Aceite confirmado via ${acceptanceChannel} em ${recordedAcceptanceAt}.`
+          : acceptanceType === 'screen_signature' && clientSignatureDataUrl
+          ? 'Assinatura digital do cliente coletada na tela.'
+          : acceptanceType === 'screen_signature'
+          ? 'Assinatura na tela sem traço anexado.'
+          : 'Assinatura do cliente prevista na via impressa (balcão).',
+        'cliente',
+        checkInAuthor,
+        nowIso
+      ),
+    ];
+    const acceptanceSummary = consolidateOrderNotesText(checkInNotesList);
 
     const mappedAcceptedChannel: ServiceOrder['acceptedChannel'] =
       acceptanceType === 'digital_channel'
@@ -358,7 +384,9 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
           imeiSt: deviceCategory === 'notebook' ? '' : triage.imeiSt,
         },
         issue: issue.trim() || 'Análise de bancada solicitada',
+        technicalNotes: checkInNotesList,
         notes: acceptanceSummary,
+        obs: acceptanceSummary,
         diagnosis: acceptanceSummary,
         status: initialStatus,
         priority: 'Normal',
@@ -1343,9 +1371,25 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
                   <p className="text-xs text-[#414752]">
                     {order.clientName} · {order.clientPhone}
                   </p>
-                  <p className="text-xs text-[#727784] bg-[#F3F6FB] p-2.5 rounded-xl border border-[#D9E0EC]">
-                    {order.notes || order.diagnosis}
-                  </p>
+                  <div className="text-xs text-[#414752] bg-[#F3F6FB] p-2.5 rounded-xl border border-[#D9E0EC] space-y-1">
+                    {getOrderNotesList(order).length > 0 ? (
+                      getOrderNotesList(order).map((entry) => {
+                        const dt = formatOrderNoteShortDate(entry.createdAt);
+                        return (
+                          <div key={entry.id} className="leading-snug">
+                            <span className="text-[#727784] font-mono text-[10px]">
+                              {dt ? `[${dt}] ` : '• '}
+                            </span>
+                            <span>{entry.text}</span>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <span className="text-[#727784]">
+                        {order.diagnosis || 'Sem observações técnicas'}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2 text-[11px] text-[#16A34A] font-medium">
                     <ShieldCheck className="w-4 h-4" />
                     <span>CQ Aprovado · Garantia {state.cfg.garantiaDias} dias · RAM limpa na entrega</span>

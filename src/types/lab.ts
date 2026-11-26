@@ -310,6 +310,16 @@ export interface OsPrefillDraft {
   returnWarrantyFromId?: number;
 }
 
+export type OrderNoteTag = 'checkin' | 'diagnostico' | 'bancada' | 'cliente' | 'geral';
+
+export interface OrderNoteEntry {
+  id: string;
+  text: string;
+  createdAt: string; // ISO string ou timestamp
+  tag?: OrderNoteTag;
+  author?: string;
+}
+
 export interface ServiceOrder {
   id: number;
   code: string;
@@ -328,6 +338,8 @@ export interface ServiceOrder {
   accessories?: string[];
   checkInNotes?: string;
   notes?: string;
+  obs?: string;
+  technicalNotes?: OrderNoteEntry[];
   evidenceCount?: number;
   evidenceMediaIds?: Partial<Record<'front' | 'back' | 'rails' | 'dock', string>>;
   clientSignatureMediaId?: string;
@@ -640,4 +652,160 @@ export interface LabState {
   };
   tombstones?: Record<string, Record<string, number>>;
   singletonTimestamps?: Record<string, number>;
+}
+
+export const ORDER_NOTE_TAG_META: Record<
+  OrderNoteTag,
+  { label: string; badgeClass: string }
+> = {
+  checkin: {
+    label: 'Check-in',
+    badgeClass: 'bg-[#EAF2FD] text-[#0056ab] border-[#0056ab]/20',
+  },
+  diagnostico: {
+    label: 'Diagnóstico',
+    badgeClass: 'bg-[#FFF7E6] text-[#D97706] border-[#D97706]/25',
+  },
+  bancada: {
+    label: 'Bancada',
+    badgeClass: 'bg-sky-50 text-sky-700 border-sky-200/80',
+  },
+  cliente: {
+    label: 'Cliente',
+    badgeClass: 'bg-[#DCFCE7] text-[#16A34A] border-[#16A34A]/25',
+  },
+  geral: {
+    label: 'Registro',
+    badgeClass: 'bg-slate-100 text-slate-600 border-slate-200/80',
+  },
+};
+
+export function inferLegacyNoteTag(text: string): OrderNoteTag {
+  const s = String(text || '');
+  if (/check-?in|inspe[çc][aã]o/i.test(s)) return 'checkin';
+  if (/copiloto|diagn[oó]stic|laudo|fonte|zk-?sk/i.test(s)) return 'diagnostico';
+  if (/aceite|whatsapp|cliente/i.test(s)) return 'cliente';
+  if (/bancada|reparo|troca|solda/i.test(s)) return 'bancada';
+  return 'geral';
+}
+
+export function createOrderNoteEntry(
+  text: string,
+  tag: OrderNoteTag = 'geral',
+  author?: string,
+  createdAt?: string
+): OrderNoteEntry {
+  return {
+    id: `note-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    text: text.trim(),
+    createdAt: createdAt || new Date().toISOString(),
+    tag,
+    ...(author && author.trim() ? { author: author.trim() } : {}),
+  };
+}
+
+export function consolidateOrderNotesText(entries: OrderNoteEntry[]): string {
+  return (entries || [])
+    .map((e) => (e?.text || '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function parseNoteDate(createdAt?: string): Date | null {
+  if (!createdAt) return null;
+  const raw = String(createdAt).trim();
+  if (!raw) return null;
+  const d = /^\d+$/.test(raw) ? new Date(Number(raw)) : new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+export function formatOrderNoteDateTime(createdAt?: string): string {
+  const d = parseNoteDate(createdAt);
+  if (!d) return '';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${dd}/${mm} ${hh}:${min}`;
+}
+
+export function formatOrderNoteShortDate(createdAt?: string): string {
+  const d = parseNoteDate(createdAt);
+  if (!d) return '';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}/${mm}`;
+}
+
+export function getOrderNotesList(
+  order?: Partial<
+    Pick<
+      ServiceOrder,
+      'id' | 'technicalNotes' | 'obs' | 'notes' | 'diagnosis' | 'createdDate' | 'updatedAt'
+    >
+  > | null
+): OrderNoteEntry[] {
+  if (!order) return [];
+  if (
+    Array.isArray(order.technicalNotes) &&
+    (order.technicalNotes.length > 0 || (!(order.obs || '').trim() && !(order.notes || '').trim()))
+  ) {
+    return order.technicalNotes
+      .filter((n) => Boolean(n && typeof n.text === 'string' && n.text.trim()))
+      .map((n, idx) => ({
+        id: n.id || `note-${order.id ?? '0'}-${idx}`,
+        text: n.text.trim(),
+        createdAt: n.createdAt || new Date().toISOString(),
+        tag: n.tag || inferLegacyNoteTag(n.text),
+        ...(n.author ? { author: n.author } : {}),
+      }));
+  }
+
+  const genericDiag = 'Em acompanhamento técnico na bancada.';
+  const rawLegacy = (
+    order.obs ||
+    order.notes ||
+    (order.diagnosis && order.diagnosis !== genericDiag ? order.diagnosis : '') ||
+    ''
+  ).trim();
+  if (!rawLegacy) return [];
+
+  const fallbackIso = order.updatedAt
+    ? new Date(order.updatedAt).toISOString()
+    : order.createdDate && /^\d{4}-\d{2}-\d{2}/.test(order.createdDate)
+      ? `${order.createdDate.slice(0, 10)}T09:00:00`
+      : new Date().toISOString();
+
+  return rawLegacy
+    .split(/\r?\n|;\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((seg, idx) => ({
+      id: `legacy-${order.id ?? 'os'}-${idx}`,
+      text: seg,
+      createdAt: fallbackIso,
+      tag: inferLegacyNoteTag(seg),
+    }));
+}
+
+export function formatOrderNotesForPrompt(
+  order?: Partial<
+    Pick<
+      ServiceOrder,
+      'id' | 'technicalNotes' | 'obs' | 'notes' | 'diagnosis' | 'createdDate' | 'updatedAt'
+    >
+  > | null
+): string {
+  const list = getOrderNotesList(order);
+  if (list.length === 0) {
+    const diag = (order?.diagnosis || '').trim();
+    return diag && diag !== 'Em acompanhamento técnico na bancada.' ? diag : '';
+  }
+  return list
+    .map((entry) => {
+      const dt = formatOrderNoteDateTime(entry.createdAt);
+      const tagLabel = ORDER_NOTE_TAG_META[entry.tag || 'geral'].label;
+      return dt ? `[${dt} · ${tagLabel}] ${entry.text}` : `[${tagLabel}] ${entry.text}`;
+    })
+    .join('\n');
 }

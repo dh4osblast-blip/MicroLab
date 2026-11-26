@@ -9,6 +9,8 @@ import {
   LabState,
   OrderDiagnosticReport,
   OrderExtraItem,
+  OrderNoteEntry,
+  OrderNoteTag,
   OrderStatus,
   OsPrefillDraft,
   PartItem,
@@ -28,6 +30,10 @@ import {
   TelemetryReading,
   UserRole,
   WarrantyCase,
+  consolidateOrderNotesText,
+  createOrderNoteEntry,
+  getOrderNotesList,
+  inferLegacyNoteTag,
 } from '../types/lab';
 import {
   canRoleAccessRoute,
@@ -851,7 +857,19 @@ interface LabContextValue {
   upsertOrderPowerTest: (targetOrderId: number | null, testEntry: PowerSupplyTestEntry) => void;
   addOrderDiagnosticReport: (orderId: number, report: Omit<OrderDiagnosticReport, 'id'>) => void;
   deleteOrderDiagnosticReport: (orderId: number, reportId: string) => void;
-  appendOrderTechnicalNotes: (orderId: number, noteText: string) => void;
+  appendOrderTechnicalNotes: (
+    orderId: number,
+    noteText: string,
+    tag?: OrderNoteTag,
+    author?: string
+  ) => ServiceOrder | null;
+  updateOrderTechnicalNote: (
+    orderId: number,
+    noteId: string,
+    nextText: string,
+    nextTag?: OrderNoteTag
+  ) => ServiceOrder | null;
+  deleteOrderTechnicalNote: (orderId: number, noteId: string) => ServiceOrder | null;
   addCustomDefect: (title: string, steps: string[]) => CustomDefectItem | null;
   deleteCustomDefect: (id: string) => void;
   setTempCalibration: (id: string, value: string) => void;
@@ -1717,6 +1735,51 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     delete cleanDataInput.signatureDataUrl;
     delete cleanDataInput.clearClientSignature;
 
+    let nextTechnicalNotes: OrderNoteEntry[] | undefined =
+      data.technicalNotes !== undefined ? data.technicalNotes : o0?.technicalNotes;
+    let nextNotesText =
+      data.obs !== undefined
+        ? data.obs
+        : data.notes !== undefined
+        ? data.notes
+        : o0?.obs ?? o0?.notes ?? '';
+
+    if (data.technicalNotes !== undefined) {
+      nextTechnicalNotes = data.technicalNotes
+        .filter((n) => Boolean(n && typeof n.text === 'string' && n.text.trim()))
+        .map((n, idx) => ({
+          ...n,
+          id: n.id || `note-${targetId}-${idx}`,
+          text: n.text.trim(),
+          createdAt: n.createdAt || new Date(nowTs).toISOString(),
+          tag: n.tag || inferLegacyNoteTag(n.text),
+        }));
+      nextNotesText = consolidateOrderNotesText(nextTechnicalNotes);
+    } else if (!o0 && nextNotesText.trim()) {
+      nextTechnicalNotes = getOrderNotesList({
+        id: targetId,
+        obs: nextNotesText,
+        notes: nextNotesText,
+        createdDate: data.createdDate || today,
+        updatedAt: nowTs,
+      });
+      nextNotesText = consolidateOrderNotesText(nextTechnicalNotes);
+    } else if (o0 && (data.notes !== undefined || data.obs !== undefined)) {
+      const existingSummary = consolidateOrderNotesText(getOrderNotesList(o0));
+      if (nextNotesText.trim() !== existingSummary.trim()) {
+        nextTechnicalNotes = nextNotesText.trim()
+          ? getOrderNotesList({
+              id: targetId,
+              obs: nextNotesText,
+              notes: nextNotesText,
+              createdDate: o0.createdDate || today,
+              updatedAt: nowTs,
+            })
+          : [];
+        nextNotesText = consolidateOrderNotesText(nextTechnicalNotes);
+      }
+    }
+
     const savedOrder: ServiceOrder = {
       ...(o0 || {
         id: targetId,
@@ -1746,6 +1809,13 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       clientName: data.clientName,
       device: data.device,
       issue: data.issue,
+      notes: nextNotesText,
+      obs: nextNotesText,
+      ...(nextTechnicalNotes !== undefined ? { technicalNotes: nextTechnicalNotes } : {}),
+      diagnosis:
+        data.diagnosis !== undefined
+          ? data.diagnosis
+          : nextNotesText || o0?.diagnosis || '',
       createdDate: data.createdDate || o0?.createdDate || today,
       serviceCatalogName: svcName,
       partId,
@@ -2367,23 +2437,104 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     scheduleCloudSync(2500);
   };
 
-  const appendOrderTechnicalNotes = (orderId: number, noteText: string) => {
+  const appendOrderTechnicalNotes = (
+    orderId: number,
+    noteText: string,
+    tag?: OrderNoteTag,
+    author?: string
+  ): ServiceOrder | null => {
     const clean = String(noteText || '').trim();
-    if (!clean) return;
+    if (!clean) return null;
+    const prevSnapshot = stateRef.current;
+    const target = prevSnapshot.orders.find((o) => o.id === orderId);
+    if (!target) return null;
+
+    const currentList = getOrderNotesList(target);
+    const resolvedTag = tag || inferLegacyNoteTag(clean);
+    const resolvedAuthor =
+      author?.trim() || currentUserRef.current?.nome || target.technician || undefined;
+    const nextList = [...currentList, createOrderNoteEntry(clean, resolvedTag, resolvedAuthor)];
+    const summary = consolidateOrderNotesText(nextList);
+    const updatedOrder: ServiceOrder = {
+      ...target,
+      technicalNotes: nextList,
+      notes: summary,
+      obs: summary,
+      diagnosis: summary || target.diagnosis,
+      updatedAt: Date.now(),
+    };
+
     setState((prev) => ({
       ...prev,
-      orders: prev.orders.map((o) => {
-        if (o.id !== orderId) return o;
-        const base = (o.notes || '').trim();
-        const nextNotes = base ? `${base}\n${clean}` : clean;
-        return {
-          ...o,
-          notes: nextNotes,
-          updatedAt: Date.now(),
-        };
-      }),
+      orders: prev.orders.map((o) => (o.id === orderId ? updatedOrder : o)),
     }));
     scheduleCloudSync(2500);
+    return updatedOrder;
+  };
+
+  const updateOrderTechnicalNote = (
+    orderId: number,
+    noteId: string,
+    nextText: string,
+    nextTag?: OrderNoteTag
+  ): ServiceOrder | null => {
+    const clean = String(nextText || '').trim();
+    if (!clean) return null;
+    const prevSnapshot = stateRef.current;
+    const target = prevSnapshot.orders.find((o) => o.id === orderId);
+    if (!target) return null;
+
+    const currentList = getOrderNotesList(target);
+    const nextList = currentList.map((item) =>
+      item.id === noteId
+        ? {
+            ...item,
+            text: clean,
+            tag: nextTag ?? item.tag ?? 'geral',
+          }
+        : item
+    );
+    const summary = consolidateOrderNotesText(nextList);
+    const updatedOrder: ServiceOrder = {
+      ...target,
+      technicalNotes: nextList,
+      notes: summary,
+      obs: summary,
+      diagnosis: summary || target.diagnosis,
+      updatedAt: Date.now(),
+    };
+
+    setState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((o) => (o.id === orderId ? updatedOrder : o)),
+    }));
+    scheduleCloudSync(2500);
+    return updatedOrder;
+  };
+
+  const deleteOrderTechnicalNote = (orderId: number, noteId: string): ServiceOrder | null => {
+    const prevSnapshot = stateRef.current;
+    const target = prevSnapshot.orders.find((o) => o.id === orderId);
+    if (!target) return null;
+
+    const currentList = getOrderNotesList(target);
+    const nextList = currentList.filter((item) => item.id !== noteId);
+    const summary = consolidateOrderNotesText(nextList);
+    const updatedOrder: ServiceOrder = {
+      ...target,
+      technicalNotes: nextList,
+      notes: summary,
+      obs: summary,
+      diagnosis: summary || '',
+      updatedAt: Date.now(),
+    };
+
+    setState((prev) => ({
+      ...prev,
+      orders: prev.orders.map((o) => (o.id === orderId ? updatedOrder : o)),
+    }));
+    scheduleCloudSync(2500);
+    return updatedOrder;
   };
 
   const addCustomDefect = (title: string, steps: string[]): CustomDefectItem | null => {
@@ -3960,6 +4111,8 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addOrderDiagnosticReport,
         deleteOrderDiagnosticReport,
         appendOrderTechnicalNotes,
+        updateOrderTechnicalNote,
+        deleteOrderTechnicalNote,
         addCustomDefect,
         deleteCustomDefect,
         setTempCalibration,

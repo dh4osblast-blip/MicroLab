@@ -39,10 +39,18 @@ import {
 } from 'lucide-react';
 import {
   DeviceCategory,
+  ORDER_NOTE_TAG_META,
   OrderExtraItem,
+  OrderNoteEntry,
+  OrderNoteTag,
   OrderStatus,
   OrderTriage,
   ServiceOrder,
+  consolidateOrderNotesText,
+  createOrderNoteEntry,
+  formatOrderNoteDateTime,
+  formatOrderNotesForPrompt,
+  getOrderNotesList,
 } from '../types/lab';
 import { formatBRL, useLabStore } from '../store/useLabStore';
 import {
@@ -127,6 +135,8 @@ interface OsFormState {
   customAccessories: string;
   issue: string;
   notes: string;
+  initialNotesText?: string;
+  technicalNotes?: OrderNoteEntry[];
   entryChecklist7: Record<string, 's' | 'n' | 't'>;
   triage: OrderTriage;
   exitChecklist: Record<string, boolean>;
@@ -213,10 +223,18 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     deleteOrderWithAdminPin,
     deleteOrderDiagnosticReport,
     appendOrderTechnicalNotes,
+    updateOrderTechnicalNote,
+    deleteOrderTechnicalNote,
     getVolatileSecret,
   } = useLabStore();
 
   const [confirmDeleteReportId, setConfirmDeleteReportId] = useState<string | null>(null);
+  const [newNoteText, setNewNoteText] = useState('');
+  const [newNoteTag, setNewNoteTag] = useState<OrderNoteTag>('bancada');
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteText, setEditingNoteText] = useState('');
+  const [editingNoteTag, setEditingNoteTag] = useState<OrderNoteTag>('bancada');
+  const [confirmDeleteNoteId, setConfirmDeleteNoteId] = useState<string | null>(null);
   const [showEngineeringModal, setShowEngineeringModal] = useState(false);
   const [engineeringTipIdx, setEngineeringTipIdx] = useState(0);
   const [showVolatileSecret, setShowVolatileSecret] = useState(false);
@@ -251,6 +269,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     setAiQuoteMeta(null);
     setAiQuoteError('');
     setAiQuoteCopied(false);
+    setNewNoteText('');
+    setNewNoteTag('bancada');
+    setEditingNoteId(null);
+    setEditingNoteText('');
+    setConfirmDeleteNoteId(null);
   }, [selectedOrderId]);
 
   const [viewTab, setViewTab] = useState<ViewTab>('Todas');
@@ -343,6 +366,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       customAccessories: '',
       issue: prefill?.issue || '',
       notes: prefill?.notes || '',
+      initialNotesText: prefill?.notes || '',
+      technicalNotes: prefill?.notes?.trim()
+        ? [createOrderNoteEntry(prefill.notes.trim(), 'geral', defaultTechName)]
+        : [],
       entryChecklist7: emptyEntryChecklist7(),
       triage: { imeiSt: '' },
       exitChecklist: emptyExitChecklist(),
@@ -449,7 +476,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       accessories: ac.filter((x) => presetSet.has(x)),
       customAccessories: customAc,
       issue: o.issue || '',
-      notes: o.notes || o.diagnosis || '',
+      notes: consolidateOrderNotesText(getOrderNotesList(o)) || o.obs || o.notes || o.diagnosis || '',
+      initialNotesText: consolidateOrderNotesText(getOrderNotesList(o)),
+      technicalNotes: getOrderNotesList(o),
       entryChecklist7: ck7,
       triage: { ...(o.triage || {}) },
       exitChecklist: sai,
@@ -675,6 +704,19 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
           order.publicAcceptanceStatus !== 'accepted' ||
           (!order.hasClientSignature && Boolean(remote.signaturePng));
         if (needsSync) {
+          const existingNotesList = getOrderNotesList(order);
+          const publicAcceptMsg = `Aceite digital confirmado pelo cliente via link público em ${acceptedAtFormatted}.`;
+          const alreadyHasAcceptNote = existingNotesList.some((n) =>
+            n.text.includes('Aceite digital confirmado pelo cliente')
+          );
+          const nextNotesList =
+            order.publicAcceptanceStatus !== 'accepted' && !alreadyHasAcceptNote
+              ? [
+                  ...existingNotesList,
+                  createOrderNoteEntry(publicAcceptMsg, 'cliente', order.clientName),
+                ]
+              : existingNotesList;
+          const nextNotesSummary = consolidateOrderNotesText(nextNotesList);
           saveServiceOrder({
             id: order.id,
             data: {
@@ -691,6 +733,9 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
               publicAcceptedIp: remote.acceptedIp,
               publicAcceptedUserAgent: remote.acceptedUserAgent,
               publicAcceptanceQuoteHash: remote.quoteHash,
+              technicalNotes: nextNotesList,
+              notes: nextNotesSummary,
+              obs: nextNotesSummary,
             },
           });
           setPublicLinkFeedback(
@@ -915,6 +960,50 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         ? form.acceptedChannel || 'Presencial'
         : form.acceptedChannel;
 
+    const existingOrderForSave = form.editingId
+      ? state.orders.find((o) => o.id === form.editingId)
+      : undefined;
+    let nextTechnicalNotesList: OrderNoteEntry[] = form.technicalNotes
+      ? [...form.technicalNotes]
+      : [];
+    const trimmedFormNotes = form.notes.trim();
+    const currentConsolidated = consolidateOrderNotesText(nextTechnicalNotesList).trim();
+    if (trimmedFormNotes !== (form.initialNotesText || '').trim() && trimmedFormNotes !== currentConsolidated) {
+      if (trimmedFormNotes) {
+        nextTechnicalNotesList = getOrderNotesList({
+          id: form.editingId || 0,
+          notes: trimmedFormNotes,
+          createdDate: existingOrderForSave?.createdDate,
+          updatedAt: Date.now(),
+        });
+      } else {
+        nextTechnicalNotesList = [];
+      }
+    } else if (!form.editingId && nextTechnicalNotesList.length === 0 && trimmedFormNotes) {
+      nextTechnicalNotesList = [
+        createOrderNoteEntry(trimmedFormNotes, 'checkin', form.technician || defaultTechName),
+      ];
+    }
+
+    if (form.clientAcceptanceType === 'digital_channel') {
+      const channelChanged =
+        !existingOrderForSave ||
+        existingOrderForSave.clientAcceptanceType !== 'digital_channel' ||
+        existingOrderForSave.clientAcceptanceChannel !== form.clientAcceptanceChannel ||
+        existingOrderForSave.clientAcceptanceAt !== nextAcceptanceAt;
+      if (channelChanged && nextAcceptanceAt) {
+        const acceptText = `Aceite confirmado via ${form.clientAcceptanceChannel} em ${nextAcceptanceAt}.`;
+        if (!nextTechnicalNotesList.some((n) => n.text === acceptText)) {
+          nextTechnicalNotesList = [
+            ...nextTechnicalNotesList,
+            createOrderNoteEntry(acceptText, 'cliente', form.technician || defaultTechName),
+          ];
+        }
+      }
+    }
+
+    const consolidatedNotesSummary = consolidateOrderNotesText(nextTechnicalNotesList);
+
     const saved = saveServiceOrder({
       id: form.editingId,
       data: {
@@ -938,8 +1027,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         hasPasscode: Boolean(form.passcode.trim() || form.patternNodes.length > 0),
         accessories: allAccessories,
         issue: form.issue.trim() || 'Análise de bancada solicitada',
-        notes: form.notes.trim(),
-        diagnosis: form.notes.trim() || 'Em acompanhamento técnico na bancada.',
+        technicalNotes: nextTechnicalNotesList,
+        notes: consolidatedNotesSummary,
+        obs: consolidatedNotesSummary,
+        diagnosis: consolidatedNotesSummary || 'Em acompanhamento técnico na bancada.',
         status: form.pedChegou && form.status === 'Aguardando Peça' ? 'Aprovado' : form.status,
         technician: form.technician || defaultTechName,
         entryChecklist7: { ...form.entryChecklist7 },
@@ -1227,7 +1318,8 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       return;
     }
 
-    const issueNorm = normStr(`${o.issue} ${o.notes || ''}`);
+    const formattedNotesPrompt = formatOrderNotesForPrompt(o);
+    const issueNorm = normStr(`${o.issue} ${formattedNotesPrompt}`);
     const matchedRoutine = APOSTILA_DEFEITOS.find((tpl) => {
       const words = normStr(tpl.t)
         .split(/\s+/)
@@ -1263,7 +1355,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         brand: o.brand,
         model: o.model,
         issue: o.issue,
-        technicalNotes: o.notes || o.diagnosis || '',
+        technicalNotes: formattedNotesPrompt,
         entryChecklistSummary: checklistSummary,
         safetyFlags: {
           swollenBattery: Boolean(o.triage?.bat),
@@ -1305,7 +1397,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         status: o.status,
         issue: o.issue,
         serviceName: o.serviceCatalogName,
-        technicalNotes: o.notes || o.diagnosis || '',
+        technicalNotes: formatOrderNotesForPrompt(o),
         items: (o.extraItems || []).map((it) => ({
           description: it.d,
           qty: Number(it.q) || 1,
@@ -1930,10 +2022,236 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       </span>
                     )}
                   </div>
-                  <p className="text-xs font-semibold text-[#091b36]">{activeOrder.issue}</p>
-                  <p className="text-xs text-[#414752] leading-relaxed">
-                    {activeOrder.notes || activeOrder.diagnosis}
-                  </p>
+                  {/* Queixa Principal destacada no topo */}
+                  <div className="rounded-xl bg-white border border-[#D9E0EC] px-3 py-2">
+                    <span className="block text-[10px] font-bold uppercase tracking-wide text-[#727784] mb-0.5">
+                      Queixa Principal (Relato do Cliente)
+                    </span>
+                    <p className="text-xs font-semibold text-[#091b36] leading-relaxed">
+                      {activeOrder.issue}
+                    </p>
+                  </div>
+
+                  {/* Blocos individuais de comentários técnicos */}
+                  {(() => {
+                    const noteBlocks = getOrderNotesList(activeOrder);
+                    return (
+                      <div className="space-y-2">
+                        {noteBlocks.length === 0 ? (
+                          <div className="rounded-xl bg-slate-50/90 border border-dashed border-slate-200/80 p-3 text-[11px] text-[#727784]">
+                            Nenhum comentário técnico registrado ainda. Use o campo abaixo para adicionar apontamentos de bancada.
+                          </div>
+                        ) : (
+                          noteBlocks.map((entry) => {
+                            const tagKey: OrderNoteTag = entry.tag || 'geral';
+                            const tagMeta = ORDER_NOTE_TAG_META[tagKey];
+                            const formattedDt = formatOrderNoteDateTime(entry.createdAt);
+                            const isEditing = editingNoteId === entry.id;
+                            const isConfirmDelete = confirmDeleteNoteId === entry.id;
+
+                            return (
+                              <div
+                                key={entry.id}
+                                className="rounded-xl bg-slate-50/90 border border-slate-200/80 p-3 space-y-1.5"
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                                    <span
+                                      className={`inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-bold ${tagMeta.badgeClass}`}
+                                    >
+                                      {tagMeta.label}
+                                    </span>
+                                    {entry.author && (
+                                      <span className="text-[10px] font-medium text-[#727784] truncate">
+                                        {entry.author}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    {formattedDt && (
+                                      <span className="text-[10px] font-mono text-slate-400 tabular-nums mr-1">
+                                        {formattedDt}
+                                      </span>
+                                    )}
+                                    {isConfirmDelete ? (
+                                      <div className="flex items-center gap-1">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            const updated = deleteOrderTechnicalNote(
+                                              activeOrder.id,
+                                              entry.id
+                                            );
+                                            setConfirmDeleteNoteId(null);
+                                            if (updated?.publicAcceptanceToken) {
+                                              void triggerAutoPublicSync(updated);
+                                            }
+                                          }}
+                                          className="px-2 py-0.5 rounded bg-[#DC2626] text-white text-[10px] font-bold cursor-pointer"
+                                        >
+                                          Confirmar
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setConfirmDeleteNoteId(null)}
+                                          className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-[#414752] text-[10px] cursor-pointer"
+                                        >
+                                          Cancelar
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setEditingNoteId(entry.id);
+                                            setEditingNoteText(entry.text);
+                                            setEditingNoteTag(tagKey);
+                                            setConfirmDeleteNoteId(null);
+                                          }}
+                                          className="p-1 rounded text-[#727784] hover:text-[#0056ab] hover:bg-white cursor-pointer"
+                                          title="Editar comentário"
+                                        >
+                                          <Edit3 className="w-3 h-3" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setConfirmDeleteNoteId(entry.id);
+                                            setEditingNoteId(null);
+                                          }}
+                                          className="p-1 rounded text-[#727784] hover:text-[#DC2626] hover:bg-[#FEE2E2]/50 cursor-pointer"
+                                          title="Excluir comentário"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {isEditing ? (
+                                  <div className="space-y-1.5 pt-1">
+                                    <textarea
+                                      rows={2}
+                                      value={editingNoteText}
+                                      onChange={(e) => setEditingNoteText(e.target.value)}
+                                      className="w-full rounded-lg border border-[#D9E0EC] bg-white px-2.5 py-1.5 text-xs text-[#091b36]"
+                                    />
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <select
+                                        value={editingNoteTag}
+                                        onChange={(e) =>
+                                          setEditingNoteTag(e.target.value as OrderNoteTag)
+                                        }
+                                        className="rounded-lg border border-[#D9E0EC] bg-white px-2 py-1 text-[11px] font-semibold text-[#414752]"
+                                      >
+                                        {(Object.keys(ORDER_NOTE_TAG_META) as OrderNoteTag[]).map(
+                                          (k) => (
+                                            <option key={k} value={k}>
+                                              {ORDER_NOTE_TAG_META[k].label}
+                                            </option>
+                                          )
+                                        )}
+                                      </select>
+                                      <div className="flex items-center gap-1.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setEditingNoteId(null);
+                                            setEditingNoteText('');
+                                          }}
+                                          className="px-2.5 py-1 rounded-lg border border-[#D9E0EC] bg-white text-[11px] font-semibold text-[#414752] cursor-pointer"
+                                        >
+                                          Cancelar
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={!editingNoteText.trim()}
+                                          onClick={() => {
+                                            const updated = updateOrderTechnicalNote(
+                                              activeOrder.id,
+                                              entry.id,
+                                              editingNoteText,
+                                              editingNoteTag
+                                            );
+                                            setEditingNoteId(null);
+                                            setEditingNoteText('');
+                                            if (updated?.publicAcceptanceToken) {
+                                              void triggerAutoPublicSync(updated);
+                                            }
+                                          }}
+                                          className="px-2.5 py-1 rounded-lg bg-[#0056ab] text-white text-[11px] font-bold hover:bg-[#1b6fd1] cursor-pointer disabled:opacity-50"
+                                        >
+                                          Salvar
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p className="text-xs text-[#414752] leading-relaxed whitespace-pre-line">
+                                    {entry.text}
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+
+                        {/* Adição rápida de comentário técnico */}
+                        <form
+                          onSubmit={(e) => {
+                            e.preventDefault();
+                            const clean = newNoteText.trim();
+                            if (!clean) return;
+                            const updated = appendOrderTechnicalNotes(
+                              activeOrder.id,
+                              clean,
+                              newNoteTag,
+                              currentUser?.nome || activeOrder.technician || defaultTechName
+                            );
+                            setNewNoteText('');
+                            if (updated?.publicAcceptanceToken) {
+                              void triggerAutoPublicSync(updated);
+                            }
+                          }}
+                          className="rounded-xl bg-white border border-[#D9E0EC] p-2 space-y-2"
+                        >
+                          <div className="flex flex-col sm:flex-row gap-1.5">
+                            <input
+                              type="text"
+                              value={newNoteText}
+                              onChange={(e) => setNewNoteText(e.target.value)}
+                              placeholder="+ Adicionar comentário técnico..."
+                              className="flex-1 rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-1.5 text-xs text-[#091b36]"
+                            />
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <select
+                                value={newNoteTag}
+                                onChange={(e) => setNewNoteTag(e.target.value as OrderNoteTag)}
+                                aria-label="Categoria do comentário"
+                                className="rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] px-2 py-1.5 text-[11px] font-semibold text-[#414752]"
+                              >
+                                {(Object.keys(ORDER_NOTE_TAG_META) as OrderNoteTag[]).map((k) => (
+                                  <option key={k} value={k}>
+                                    {ORDER_NOTE_TAG_META[k].label}
+                                  </option>
+                                ))}
+                              </select>
+                              <button
+                                type="submit"
+                                disabled={!newNoteText.trim()}
+                                className="inline-flex items-center gap-1 rounded-lg bg-[#0056ab] hover:bg-[#1b6fd1] text-white px-2.5 py-1.5 text-[11px] font-bold cursor-pointer disabled:opacity-50"
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                <span>Adicionar</span>
+                              </button>
+                            </div>
+                          </div>
+                        </form>
+                      </div>
+                    );
+                  })()}
                   <div className="pt-1.5 grid grid-cols-2 gap-1.5 text-[11px] text-[#414752]">
                     <div>
                       {resolveOrderDeviceCategory(activeOrder) === 'notebook'
@@ -2013,20 +2331,19 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                             <button
                               type="button"
                               onClick={() => {
-                                const snippet = `[${
+                                const authorLabel =
                                   aiCopilotResult.sourceMode === 'local_fallback'
                                     ? 'Pré-Diagnóstico Offline'
-                                    : 'Copiloto IA'
-                                }] ${aiCopilotResult.resumoTecnicoOs}`;
-                                appendOrderTechnicalNotes(activeOrder.id, snippet);
+                                    : 'Copiloto IA';
+                                const updated = appendOrderTechnicalNotes(
+                                  activeOrder.id,
+                                  aiCopilotResult.resumoTecnicoOs,
+                                  'diagnostico',
+                                  authorLabel
+                                );
                                 setAiCopilotAppended(true);
-                                if (activeOrder.publicAcceptanceToken) {
-                                  void triggerAutoPublicSync({
-                                    ...activeOrder,
-                                    notes: activeOrder.notes
-                                      ? `${activeOrder.notes}\n${snippet}`
-                                      : snippet,
-                                  });
+                                if (updated?.publicAcceptanceToken) {
+                                  void triggerAutoPublicSync(updated);
                                 }
                               }}
                               className="rounded-md bg-[#0056ab] text-white px-2 py-1 text-[10px] font-bold hover:bg-[#1b6fd1] cursor-pointer"
@@ -3096,9 +3413,19 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                   customDefects={state.cfg.defeitosExtra}
                   editingOrderId={form.editingId}
                   onApplyNote={(snippet) =>
-                    setForm((p) =>
-                      p ? { ...p, notes: p.notes ? `${p.notes} · ${snippet}` : snippet } : p
-                    )
+                    setForm((p) => {
+                      if (!p) return p;
+                      const nextEntries = [
+                        ...(p.technicalNotes || []),
+                        createOrderNoteEntry(
+                          snippet,
+                          'diagnostico',
+                          p.technician || defaultTechName
+                        ),
+                      ];
+                      const nextText = consolidateOrderNotesText(nextEntries);
+                      return { ...p, technicalNotes: nextEntries, notes: nextText };
+                    })
                   }
                 />
 
@@ -4735,7 +5062,22 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
               </div>
               <div className="px-1.5 py-0.5 col-span-2">
                 <span className="block text-[8px] uppercase text-gray-600">Observações técnicas</span>
-                <div>{activeOrder.notes || activeOrder.diagnosis}</div>
+                {getOrderNotesList(activeOrder).length > 0 ? (
+                  <div className="space-y-0.5">
+                    {getOrderNotesList(activeOrder).map((entry) => {
+                      const dt = formatOrderNoteDateTime(entry.createdAt);
+                      const tagLabel = ORDER_NOTE_TAG_META[entry.tag || 'geral'].label;
+                      return (
+                        <div key={entry.id}>
+                          • {dt ? `[${dt} · ${tagLabel}] ` : `[${tagLabel}] `}
+                          {entry.text}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div>{activeOrder.diagnosis || '—'}</div>
+                )}
               </div>
             </div>
           </div>

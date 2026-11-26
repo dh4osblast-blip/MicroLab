@@ -1,4 +1,10 @@
-import { DeviceCategory, LabConfig, ServiceOrder } from '../types/lab';
+import {
+  DeviceCategory,
+  LabConfig,
+  ServiceOrder,
+  formatOrderNoteShortDate,
+  getOrderNotesList,
+} from '../types/lab';
 import {
   calcOrderTotalAmount,
   formatDateBR,
@@ -219,7 +225,8 @@ export function scrubPublicText(raw: string): string {
       /(?:^|[\s;,.])(?:senha|pin|padr[aã]o\s*(?:3x3|de\s*desbloqueio)?|passcode|desbloqueio)\s*[:=\-]?\s*[^\n,;]+/gi,
       ' [credencial protegida]'
     )
-    .replace(/\s{2,}/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
 
@@ -323,13 +330,26 @@ function buildPublicChecklistChips(order: ServiceOrder): PublicAcceptanceCheckli
 
 function buildPublicTechnicalReport(order: ServiceOrder): string {
   const sections: string[] = [];
-  const rawNotes = (order.notes || '').trim();
+  const notesList = getOrderNotesList(order);
   const rawDiag = (order.diagnosis || '').trim();
   const genericDefault = 'Em acompanhamento técnico na bancada.';
 
-  const primaryNote = rawNotes || (rawDiag && rawDiag !== genericDefault ? rawDiag : '');
-  if (primaryNote) {
-    sections.push(scrubPublicText(primaryNote));
+  if (notesList.length > 0) {
+    const formattedLines = notesList
+      .map((entry) => {
+        const shortDate = formatOrderNoteShortDate(entry.createdAt);
+        return shortDate ? `• [${shortDate}] ${entry.text.trim()}` : `• ${entry.text.trim()}`;
+      })
+      .join('\n');
+    const scrubbedNotes = scrubPublicText(formattedLines);
+    if (scrubbedNotes) {
+      sections.push(scrubbedNotes);
+    }
+  } else if (rawDiag && rawDiag !== genericDefault) {
+    const scrubbedDiag = scrubPublicText(rawDiag);
+    if (scrubbedDiag) {
+      sections.push(scrubbedDiag);
+    }
   }
 
   if (Array.isArray(order.laudos) && order.laudos.length > 0) {
