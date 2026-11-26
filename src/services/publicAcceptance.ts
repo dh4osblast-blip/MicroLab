@@ -1,7 +1,8 @@
-import { LabConfig, ServiceOrder } from '../types/lab';
+import { DeviceCategory, LabConfig, ServiceOrder } from '../types/lab';
 import {
   calcOrderTotalAmount,
   formatDateBR,
+  resolveOrderDeviceCategory,
   resolveOrderWarrantyDays,
 } from '../utils/pricing';
 import {
@@ -39,6 +40,8 @@ export interface PublicAcceptanceDocument {
   technician?: string;
   clientName: string;
   device: string;
+  deviceCategory?: DeviceCategory;
+  deviceSerial?: string;
   issue: string;
   technicalReport?: string;
   aiExplanation?: string;
@@ -220,34 +223,79 @@ export function scrubPublicText(raw: string): string {
     .trim();
 }
 
+function buildPublicDeviceSerial(order: ServiceOrder, category: DeviceCategory): string {
+  const raw = String(order.imei || '').trim();
+  if (!raw || raw.toLowerCase() === 'não informado') return '';
+  const noPii = raw
+    .replace(/\b\d{3}\.\d{3}\.\d{3}-\d{2}\b/g, '')
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '')
+    .trim();
+  if (!noPii) return '';
+  if (category === 'notebook') {
+    return noPii.slice(0, 60);
+  }
+  const digitsOnly = noPii.replace(/\D/g, '');
+  if (digitsOnly.length >= 14 && digitsOnly.length <= 17 && /^\d+$/.test(noPii.replace(/[\s-]/g, ''))) {
+    return `${digitsOnly.slice(0, 4)}•••••••${digitsOnly.slice(-4)}`;
+  }
+  return noPii.slice(0, 60);
+}
+
 function buildPublicChecklistChips(order: ServiceOrder): PublicAcceptanceChecklistChip[] {
   const chips: PublicAcceptanceChecklistChip[] = [];
   const ck7 = order.entryChecklist7;
+  const category = resolveOrderDeviceCategory(order);
 
   if (ck7 && typeof ck7 === 'object') {
-    if (ck7.liga === 's') chips.push({ label: 'Liga: Sim', tone: 'ok' });
-    else if (ck7.liga === 'n') chips.push({ label: 'Liga: Não', tone: 'warn' });
+    if (category === 'notebook') {
+      if (ck7.nb_liga === 's') chips.push({ label: 'Liga e dá vídeo: Sim', tone: 'ok' });
+      else if (ck7.nb_liga === 'n') chips.push({ label: 'Liga e dá vídeo: Não', tone: 'warn' });
 
-    if (ck7.tela === 's') chips.push({ label: 'Tela: Íntegra', tone: 'ok' });
-    else if (ck7.tela === 'n') chips.push({ label: 'Tela: Com avaria', tone: 'warn' });
+      if (ck7.nb_tela === 's') chips.push({ label: 'Tela e dobradiças: OK', tone: 'ok' });
+      else if (ck7.nb_tela === 'n') chips.push({ label: 'Tela e dobradiças: Avaria', tone: 'warn' });
 
-    if (order.triage?.oxi || ck7.liq === 's') {
-      chips.push({ label: 'Oxidação / Umidade: Detectada', tone: 'warn' });
-    } else if (ck7.liq === 'n') {
-      chips.push({ label: 'Sem sinais de líquido', tone: 'ok' });
+      if (ck7.nb_teclado === 's') chips.push({ label: 'Teclado e Touchpad: OK', tone: 'ok' });
+      else if (ck7.nb_teclado === 'n') chips.push({ label: 'Teclado e Touchpad: Falha', tone: 'warn' });
+
+      if (ck7.nb_portas === 's') chips.push({ label: 'Portas USB/HDMI/Carga: OK', tone: 'ok' });
+      else if (ck7.nb_portas === 'n') chips.push({ label: 'Portas USB/HDMI/Carga: Falha', tone: 'warn' });
+
+      if (ck7.nb_bateria === 's') chips.push({ label: 'Bateria: Segura carga / Sem inchaço', tone: 'ok' });
+      else if (ck7.nb_bateria === 'n') chips.push({ label: 'Bateria: Sem carga / Atenção', tone: 'warn' });
+
+      if (ck7.nb_carcaca === 's') chips.push({ label: 'Carcaça e parafusos: Íntegros', tone: 'ok' });
+      else if (ck7.nb_carcaca === 'n') chips.push({ label: 'Carcaça e parafusos: Com avaria', tone: 'warn' });
+
+      if (order.triage?.oxi || ck7.nb_liq === 's') {
+        chips.push({ label: 'Oxidação / Líquido: Detectado', tone: 'warn' });
+      } else if (ck7.nb_liq === 'n') {
+        chips.push({ label: 'Sem sinais de líquido', tone: 'ok' });
+      }
+    } else {
+      if (ck7.liga === 's') chips.push({ label: 'Liga: Sim', tone: 'ok' });
+      else if (ck7.liga === 'n') chips.push({ label: 'Liga: Não', tone: 'warn' });
+
+      if (ck7.tela === 's') chips.push({ label: 'Tela: Íntegra', tone: 'ok' });
+      else if (ck7.tela === 'n') chips.push({ label: 'Tela: Com avaria', tone: 'warn' });
+
+      if (order.triage?.oxi || ck7.liq === 's') {
+        chips.push({ label: 'Oxidação / Umidade: Detectada', tone: 'warn' });
+      } else if (ck7.liq === 'n') {
+        chips.push({ label: 'Sem sinais de líquido', tone: 'ok' });
+      }
+
+      if (ck7.audio === 's') chips.push({ label: 'Áudio: OK', tone: 'ok' });
+      else if (ck7.audio === 'n') chips.push({ label: 'Áudio: Falha', tone: 'warn' });
+
+      if (ck7.cam === 's') chips.push({ label: 'Câmeras: OK', tone: 'ok' });
+      else if (ck7.cam === 'n') chips.push({ label: 'Câmeras: Falha', tone: 'warn' });
+
+      if (ck7.carga === 's') chips.push({ label: 'Conector carga: OK', tone: 'ok' });
+      else if (ck7.carga === 'n') chips.push({ label: 'Conector carga: Falha', tone: 'warn' });
+
+      if (ck7.marcas === 's') chips.push({ label: 'Carcaça: Com marcas de uso', tone: 'neutral' });
+      else if (ck7.marcas === 'n') chips.push({ label: 'Carcaça: Sem marcas', tone: 'ok' });
     }
-
-    if (ck7.audio === 's') chips.push({ label: 'Áudio: OK', tone: 'ok' });
-    else if (ck7.audio === 'n') chips.push({ label: 'Áudio: Falha', tone: 'warn' });
-
-    if (ck7.cam === 's') chips.push({ label: 'Câmeras: OK', tone: 'ok' });
-    else if (ck7.cam === 'n') chips.push({ label: 'Câmeras: Falha', tone: 'warn' });
-
-    if (ck7.carga === 's') chips.push({ label: 'Conector carga: OK', tone: 'ok' });
-    else if (ck7.carga === 'n') chips.push({ label: 'Conector carga: Falha', tone: 'warn' });
-
-    if (ck7.marcas === 's') chips.push({ label: 'Carcaça: Com marcas de uso', tone: 'neutral' });
-    else if (ck7.marcas === 'n') chips.push({ label: 'Carcaça: Sem marcas', tone: 'ok' });
   } else {
     if (order.triage?.oxi) {
       chips.push({ label: 'Oxidação: Detectada', tone: 'warn' });
@@ -266,7 +314,7 @@ function buildPublicChecklistChips(order: ServiceOrder): PublicAcceptanceCheckli
     }
   }
 
-  if (order.triage?.bat) {
+  if (order.triage?.bat && !(category === 'notebook' && ck7?.nb_bateria === 'n')) {
     chips.push({ label: 'Bateria: Inchada (atenção)', tone: 'warn' });
   }
 
@@ -486,6 +534,11 @@ function decodePublicDoc(
     technician: decodeFsString(f.technician) || undefined,
     clientName: decodeFsString(f.clientName),
     device: decodeFsString(f.device),
+    deviceCategory: (() => {
+      const cat = decodeFsString(f.deviceCategory);
+      return cat === 'notebook' || cat === 'tablet' || cat === 'smartphone' ? cat : undefined;
+    })(),
+    deviceSerial: decodeFsString(f.deviceSerial) || undefined,
     issue: decodeFsString(f.issue),
     technicalReport: decodeFsString(f.technicalReport) || undefined,
     aiExplanation: decodeFsString(f.aiExplanation) || undefined,
@@ -534,6 +587,8 @@ function buildSanitizedOrderTrackingFields(
   const technicalReport = buildPublicTechnicalReport(order);
   const aiExplanation = scrubPublicText(order.publicAiSummary || '').slice(0, 2900);
   const entryChecklist = buildPublicChecklistChips(order);
+  const deviceCategory = resolveOrderDeviceCategory(order);
+  const deviceSerial = buildPublicDeviceSerial(order, deviceCategory);
   const paidAmount = Math.max(0, Number(order.paidAmount) || 0);
   const signalPaid = Math.max(0, Number(order.signalPaid) || 0);
   const updatedAtMs = Date.now();
@@ -543,6 +598,8 @@ function buildSanitizedOrderTrackingFields(
     expectedDeliveryDate: { stringValue: expectedDeliveryDate },
     createdDateLabel: { stringValue: createdDateLabel },
     technician: { stringValue: technician },
+    deviceCategory: { stringValue: deviceCategory },
+    deviceSerial: { stringValue: deviceSerial },
     technicalReport: { stringValue: technicalReport },
     aiExplanation: { stringValue: aiExplanation },
     entryChecklist: {

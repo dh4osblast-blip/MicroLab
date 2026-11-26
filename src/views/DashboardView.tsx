@@ -13,6 +13,7 @@ import {
   ClipboardList,
   Cpu,
   DollarSign,
+  Laptop,
   MessageCircle,
   PackageCheck,
   PackageSearch,
@@ -173,6 +174,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   });
 
   const getDeviceIcon = (type: ServiceOrder['deviceType']) => {
+    if (type === 'laptop') return Laptop;
     if (type === 'tablet') return Tablet;
     if (type === 'watch') return Watch;
     return Smartphone;

@@ -30,6 +30,8 @@
         "technician": { "type": "string", "maxLength": 80 },
         "clientName": { "type": "string", "maxLength": 120 },
         "device": { "type": "string", "maxLength": 160 },
+        "deviceCategory": { "type": "string", "enum": ["smartphone", "tablet", "notebook"] },
+        "deviceSerial": { "type": "string", "maxLength": 80 },
         "issue": { "type": "string", "maxLength": 600 },
         "technicalReport": { "type": "string", "maxLength": 3000 },
         "aiExplanation": { "type": "string", "maxLength": 3000 },

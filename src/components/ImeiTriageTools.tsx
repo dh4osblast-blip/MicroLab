@@ -19,6 +19,7 @@ interface ImeiTriageInsightProps {
   orders: ServiceOrder[];
   excludeOrderId?: number;
   compact?: boolean;
+  isNotebook?: boolean;
 }
 
 export const ImeiTriageInsight: React.FC<ImeiTriageInsightProps> = ({
@@ -26,6 +27,7 @@ export const ImeiTriageInsight: React.FC<ImeiTriageInsightProps> = ({
   orders,
   excludeOrderId,
   compact = false,
+  isNotebook = false,
 }) => {
   const [copiedMsg, setCopiedMsg] = useState('');
   const [offlineWarn, setOfflineWarn] = useState(false);
@@ -67,58 +69,64 @@ export const ImeiTriageInsight: React.FC<ImeiTriageInsightProps> = ({
     window.setTimeout(() => setCopiedMsg(''), 4000);
   };
 
+  if (isNotebook && history.matches.length === 0) {
+    return null;
+  }
+
   return (
     <div className="space-y-1.5">
-      <div className="flex flex-wrap items-center gap-1.5">
-        {luhn.status === 'valid' && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-[#DCFCE7] border border-[#16A34A]/30 px-2 py-0.5 text-[10px] font-bold text-[#16A34A]">
-            <CheckCircle2 className="w-3 h-3 shrink-0" />
-            <span>{luhn.label}</span>
-          </span>
-        )}
-        {luhn.status === 'invalid' && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-[#FEE2E2] border border-[#DC2626]/30 px-2 py-0.5 text-[10px] font-bold text-[#DC2626]">
-            <AlertTriangle className="w-3 h-3 shrink-0" />
-            <span>{luhn.label}</span>
-          </span>
-        )}
-        {luhn.status === 'incomplete' && (
-          <span className="inline-flex items-center gap-1 rounded-md bg-[#FFF7E6] border border-[#D97706]/30 px-2 py-0.5 text-[10px] font-semibold text-[#D97706]">
-            <AlertTriangle className="w-3 h-3 shrink-0" />
-            <span>{luhn.label}</span>
-          </span>
-        )}
-
-        <button
-          type="button"
-          onClick={handleCopyAndConsultAnatel}
-          className={`inline-flex items-center gap-1 rounded-lg border border-[#0056ab]/30 bg-[#EAF2FD] text-[#0056ab] hover:bg-[#dfe8ff] font-semibold cursor-pointer transition-colors ${
-            compact ? 'px-2 py-0.5 text-[10px]' : 'px-2.5 py-1 text-[11px]'
-          }`}
-        >
-          {copiedMsg && !offlineWarn ? (
-            <Check className="w-3 h-3 text-[#16A34A] shrink-0" />
-          ) : (
-            <Copy className="w-3 h-3 shrink-0" />
+      {!isNotebook && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {luhn.status === 'valid' && (
+            <span className="inline-flex items-center gap-1 rounded-md bg-[#DCFCE7] border border-[#16A34A]/30 px-2 py-0.5 text-[10px] font-bold text-[#16A34A]">
+              <CheckCircle2 className="w-3 h-3 shrink-0" />
+              <span>{luhn.label}</span>
+            </span>
           )}
-          <span>Copiar e Consultar Anatel</span>
-          <ExternalLink className="w-2.5 h-2.5 shrink-0 opacity-75" />
-        </button>
+          {luhn.status === 'invalid' && (
+            <span className="inline-flex items-center gap-1 rounded-md bg-[#FEE2E2] border border-[#DC2626]/30 px-2 py-0.5 text-[10px] font-bold text-[#DC2626]">
+              <AlertTriangle className="w-3 h-3 shrink-0" />
+              <span>{luhn.label}</span>
+            </span>
+          )}
+          {luhn.status === 'incomplete' && (
+            <span className="inline-flex items-center gap-1 rounded-md bg-[#FFF7E6] border border-[#D97706]/30 px-2 py-0.5 text-[10px] font-semibold text-[#D97706]">
+              <AlertTriangle className="w-3 h-3 shrink-0" />
+              <span>{luhn.label}</span>
+            </span>
+          )}
 
-        <a
-          ref={anatelLinkRef}
-          href="https://consultaaparelhoimpedido.com.br"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="hidden"
-          aria-hidden="true"
-          tabIndex={-1}
-        >
-          Anatel
-        </a>
-      </div>
+          <button
+            type="button"
+            onClick={handleCopyAndConsultAnatel}
+            className={`inline-flex items-center gap-1 rounded-lg border border-[#0056ab]/30 bg-[#EAF2FD] text-[#0056ab] hover:bg-[#dfe8ff] font-semibold cursor-pointer transition-colors ${
+              compact ? 'px-2 py-0.5 text-[10px]' : 'px-2.5 py-1 text-[11px]'
+            }`}
+          >
+            {copiedMsg && !offlineWarn ? (
+              <Check className="w-3 h-3 text-[#16A34A] shrink-0" />
+            ) : (
+              <Copy className="w-3 h-3 shrink-0" />
+            )}
+            <span>Copiar e Consultar Anatel</span>
+            <ExternalLink className="w-2.5 h-2.5 shrink-0 opacity-75" />
+          </button>
 
-      {copiedMsg && (
+          <a
+            ref={anatelLinkRef}
+            href="https://consultaaparelhoimpedido.com.br"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hidden"
+            aria-hidden="true"
+            tabIndex={-1}
+          >
+            Anatel
+          </a>
+        </div>
+      )}
+
+      {!isNotebook && copiedMsg && (
         <div
           className={`rounded-lg px-2.5 py-1.5 text-[10px] font-medium flex items-center gap-1.5 ${
             offlineWarn

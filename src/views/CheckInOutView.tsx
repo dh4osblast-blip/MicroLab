@@ -4,24 +4,28 @@ import {
   Check,
   CheckCircle2,
   Eraser,
+  Laptop,
   ShieldAlert,
   ShieldCheck,
   Smartphone,
   Sparkles,
+  Tablet,
   Trash2,
   UserCheck,
   Zap,
 } from 'lucide-react';
-import { OrderStatus, OrderTriage, RouteId, ServiceOrder } from '../types/lab';
+import { DeviceCategory, OrderStatus, OrderTriage, RouteId, ServiceOrder } from '../types/lab';
 import { formatBRL, useLabStore } from '../store/useLabStore';
 import {
   ENTRY_CHECKLIST_ITEMS,
   IMEI_TRIAGE_STATUSES,
+  NOTEBOOK_ENTRY_CHECKLIST_ITEMS,
   arredondarPreco,
   calcEffectivePricingFromConfig,
   calcGanhoDupla,
   calcOrderTotalAmount,
   calcTaxaEntregaByNeighborhood,
+  getEntryChecklistItems,
 } from '../utils/pricing';
 import { AndroidPatternLock } from '../components/AndroidPatternLock';
 import { PreDiagnosisPanel } from '../components/PreDiagnosisPanel';
@@ -53,7 +57,7 @@ const normStr = (s: string) =>
 
 const initialEntry7 = (): Record<string, 's' | 'n' | 't'> => {
   const rec: Record<string, 's' | 'n' | 't'> = {};
-  ENTRY_CHECKLIST_ITEMS.forEach((item) => {
+  [...ENTRY_CHECKLIST_ITEMS, ...NOTEBOOK_ENTRY_CHECKLIST_ITEMS].forEach((item) => {
     rec[item.key] = 't';
   });
   return rec;
@@ -99,6 +103,7 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
   const [customClientName, setCustomClientName] = useState('');
   const [technician, setTechnician] = useState(defaultTechName);
   const [initialStatus, setInitialStatus] = useState<OrderStatus>('Orçamento');
+  const [deviceCategory, setDeviceCategory] = useState<DeviceCategory>('smartphone');
   const [device, setDevice] = useState('');
   const [imei, setImei] = useState('');
   const [accessories, setAccessories] = useState('');
@@ -180,11 +185,13 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
   ]);
 
   const handleMarkAllOk = () => {
-    const next: Record<string, 's' | 'n' | 't'> = {};
-    ENTRY_CHECKLIST_ITEMS.forEach((item) => {
-      next[item.key] = 's';
+    setEntry7((prev) => {
+      const next = { ...prev };
+      getEntryChecklistItems(deviceCategory).forEach((item) => {
+        next[item.key] = 's';
+      });
+      return next;
     });
-    setEntry7(next);
   };
 
   // Canvas signature drawing helpers
@@ -304,19 +311,33 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
         ? 'Presencial'
         : '';
 
+    const defaultDeviceLabel =
+      deviceCategory === 'notebook'
+        ? 'Notebook'
+        : deviceCategory === 'tablet'
+        ? 'Tablet'
+        : 'Smartphone';
+    const resolvedDeviceType: ServiceOrder['deviceType'] =
+      deviceCategory === 'notebook'
+        ? 'laptop'
+        : deviceCategory === 'tablet'
+        ? 'tablet'
+        : device.toLowerCase().includes('ipad')
+        ? 'tablet'
+        : device.toLowerCase().includes('watch')
+        ? 'watch'
+        : 'smartphone';
+
     const newOs = saveServiceOrder({
       data: {
         clientId: selectedClient?.id || `cli-${Date.now()}`,
         clientName,
         clientPhone,
         clientCpf,
-        model: device.trim() || 'Smartphone',
-        device: device.trim() || 'Smartphone',
-        deviceType: device.toLowerCase().includes('ipad')
-          ? 'tablet'
-          : device.toLowerCase().includes('watch')
-          ? 'watch'
-          : 'smartphone',
+        model: device.trim() || defaultDeviceLabel,
+        device: device.trim() || defaultDeviceLabel,
+        deviceCategory,
+        deviceType: resolvedDeviceType,
         imei: imei.trim() || 'Não informado',
         hasPasscode: hasSecret,
         accessories: accessories
@@ -332,7 +353,10 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
         signatureDataUrl: clientSignatureDataUrl,
         acceptedChannel: mappedAcceptedChannel,
         entryChecklist7: { ...entry7 },
-        triage: { ...triage },
+        triage: {
+          ...triage,
+          imeiSt: deviceCategory === 'notebook' ? '' : triage.imeiSt,
+        },
         issue: issue.trim() || 'Análise de bancada solicitada',
         notes: acceptanceSummary,
         diagnosis: acceptanceSummary,
@@ -350,12 +374,24 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
         partsPrice: 0,
         deliveryFee,
         signalPaid,
-        checklist: {
-          faceId: entry7.tela === 's' ? 'OK' : 'Não Testa',
-          cameras: entry7.cam === 's' ? 'OK 100%' : 'Verificar',
-          battery: triage.bat ? 'Inchada (Cuidado)' : 'Triagem DC',
-          chassis: entry7.marcas === 's' ? 'Com marcas' : 'Inspecionado',
-        },
+        checklist:
+          deviceCategory === 'notebook'
+            ? {
+                faceId: entry7.nb_liga === 's' ? 'Liga/Vídeo OK' : 'Não Testa',
+                cameras: entry7.nb_teclado === 's' ? 'Teclado/Touch OK' : 'Verificar',
+                battery: triage.bat
+                  ? 'Inchada (Cuidado)'
+                  : entry7.nb_bateria === 's'
+                  ? 'Segura carga'
+                  : 'Verificar',
+                chassis: entry7.nb_carcaca === 's' ? 'Íntegra' : 'Com avarias',
+              }
+            : {
+                faceId: entry7.tela === 's' ? 'OK' : 'Não Testa',
+                cameras: entry7.cam === 's' ? 'OK 100%' : 'Verificar',
+                battery: triage.bat ? 'Inchada (Cuidado)' : 'Triagem DC',
+                chassis: entry7.marcas === 's' ? 'Com marcas' : 'Inspecionado',
+              },
       },
       volatileSecret: hasSecret
         ? {
@@ -483,10 +519,38 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
           {/* Left Column */}
           <div className="lg:col-span-7 space-y-4">
             <div className="rounded-2xl bg-white p-5 border border-[#D9E0EC] space-y-4">
-              <h2 className="text-sm font-bold text-[#091b36] flex items-center gap-2">
-                <UserCheck className="w-4 h-4 text-[#0056ab]" />
-                <span>1. Dados do Cliente &amp; Equipamento</span>
-              </h2>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="text-sm font-bold text-[#091b36] flex items-center gap-2">
+                  <UserCheck className="w-4 h-4 text-[#0056ab]" />
+                  <span>1. Dados do Cliente &amp; Equipamento</span>
+                </h2>
+                <div className="inline-flex items-center rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] p-0.5">
+                  {(
+                    [
+                      { id: 'smartphone', label: 'Smartphone', Icon: Smartphone },
+                      { id: 'tablet', label: 'Tablet', Icon: Tablet },
+                      { id: 'notebook', label: 'Notebook', Icon: Laptop },
+                    ] as const
+                  ).map(({ id, label, Icon }) => {
+                    const active = deviceCategory === id;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => setDeviceCategory(id)}
+                        className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors cursor-pointer ${
+                          active
+                            ? 'bg-[#0056ab] text-white'
+                            : 'text-[#414752] hover:text-[#091b36]'
+                        }`}
+                      >
+                        <Icon className="w-3.5 h-3.5" />
+                        <span>{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div className="sm:col-span-2">
@@ -550,7 +614,13 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
                     required
                     value={device}
                     onChange={(e) => setDevice(e.target.value)}
-                    placeholder="Ex: Galaxy A14 / iPhone 13"
+                    placeholder={
+                      deviceCategory === 'notebook'
+                        ? 'Ex: Dell Inspiron 15 / MacBook Air'
+                        : deviceCategory === 'tablet'
+                        ? 'Ex: Galaxy Tab S9 / iPad 10'
+                        : 'Ex: Galaxy A14 / iPhone 13'
+                    }
                     className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs text-[#091b36]"
                   />
                 </div>
@@ -572,11 +642,13 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
-                  <label className="block text-[11px] font-semibold text-[#414752] mb-1">IMEI / Serial</label>
+                  <label className="block text-[11px] font-semibold text-[#414752] mb-1">
+                    {deviceCategory === 'notebook' ? 'Número de Série / Serial (S/N)' : 'IMEI / Serial'}
+                  </label>
                   <input
                     value={imei}
                     onChange={(e) => setImei(e.target.value)}
-                    placeholder="*#06#"
+                    placeholder={deviceCategory === 'notebook' ? 'S/N na etiqueta inferior ou BIOS' : '*#06#'}
                     className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs font-mono text-[#091b36]"
                   />
                 </div>
@@ -585,7 +657,11 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
                   <input
                     value={accessories}
                     onChange={(e) => setAccessories(e.target.value)}
-                    placeholder="Chip, capa..."
+                    placeholder={
+                      deviceCategory === 'notebook'
+                        ? 'Carregador / Fonte, Mochila, Mouse...'
+                        : 'Chip, capa...'
+                    }
                     className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs text-[#091b36]"
                   />
                 </div>
@@ -607,6 +683,7 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
               <div className="space-y-2">
                 <GeminiOcrButton
                   compact
+                  isNotebook={deviceCategory === 'notebook'}
                   onExtracted={(res) => {
                     const m = res.marca.trim();
                     const mod = res.modeloComercial.trim();
@@ -620,7 +697,12 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
                     if (res.imei) setImei(res.imei);
                   }}
                 />
-                <ImeiTriageInsight imei={imei} orders={state.orders} compact />
+                <ImeiTriageInsight
+                  imei={imei}
+                  orders={state.orders}
+                  compact
+                  isNotebook={deviceCategory === 'notebook'}
+                />
               </div>
 
               <div className="rounded-xl bg-[#FFF7E6] border border-[#D97706]/25 px-3 py-2 flex items-start gap-2 text-[11px] text-[#414752]">
@@ -856,7 +938,7 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
                   </button>
                 </div>
                 <div className="space-y-1.5">
-                  {ENTRY_CHECKLIST_ITEMS.map((item) => {
+                  {getEntryChecklistItems(deviceCategory).map((item) => {
                     const val = entry7[item.key] || 't';
                     return (
                       <div
@@ -908,29 +990,33 @@ export const CheckInOutView: React.FC<CheckInOutViewProps> = ({
           <div className="lg:col-span-5 space-y-4">
             {/* Triagem IMEI & Segurança */}
             <div className="rounded-2xl bg-white p-5 border border-[#D9E0EC] space-y-3">
-              <h2 className="text-sm font-bold text-[#091b36]">4. Triagem IMEI &amp; Segurança ESD</h2>
-              <div className="flex flex-wrap gap-1.5">
-                {[...IMEI_TRIAGE_STATUSES, { value: '' as const, label: 'Não consultado' }].map((opt) => (
-                  <button
-                    key={opt.value || 'empty'}
-                    type="button"
-                    onClick={() => setTriage((p) => ({ ...p, imeiSt: opt.value }))}
-                    className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold cursor-pointer ${
-                      (triage.imeiSt || '') === opt.value
-                        ? opt.value === 'impedido'
-                          ? 'bg-[#DC2626] border-[#DC2626] text-white'
-                          : opt.value === 'suspeito'
-                          ? 'bg-[#D97706] border-[#D97706] text-white'
-                          : opt.value === 'regular'
-                          ? 'bg-[#16A34A] border-[#16A34A] text-white'
-                          : 'bg-[#091b36] border-[#091b36] text-white'
-                        : 'bg-[#F3F6FB] border-[#D9E0EC] text-[#414752]'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
+              <h2 className="text-sm font-bold text-[#091b36]">
+                4. {deviceCategory === 'notebook' ? 'Triagem & Segurança ESD' : 'Triagem IMEI & Segurança ESD'}
+              </h2>
+              {deviceCategory !== 'notebook' && (
+                <div className="flex flex-wrap gap-1.5">
+                  {[...IMEI_TRIAGE_STATUSES, { value: '' as const, label: 'Não consultado' }].map((opt) => (
+                    <button
+                      key={opt.value || 'empty'}
+                      type="button"
+                      onClick={() => setTriage((p) => ({ ...p, imeiSt: opt.value }))}
+                      className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold cursor-pointer ${
+                        (triage.imeiSt || '') === opt.value
+                          ? opt.value === 'impedido'
+                            ? 'bg-[#DC2626] border-[#DC2626] text-white'
+                            : opt.value === 'suspeito'
+                            ? 'bg-[#D97706] border-[#D97706] text-white'
+                            : opt.value === 'regular'
+                            ? 'bg-[#16A34A] border-[#16A34A] text-white'
+                            : 'bg-[#091b36] border-[#091b36] text-white'
+                          : 'bg-[#F3F6FB] border-[#D9E0EC] text-[#414752]'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-xs">
                 <label className="inline-flex items-center gap-2 cursor-pointer">
                   <input

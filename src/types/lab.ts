@@ -31,6 +31,8 @@ export type OrderStatus =
   | 'Em Reparo SMD'
   | 'Pronto Retirada';
 
+export type DeviceCategory = 'smartphone' | 'tablet' | 'notebook';
+
 export type UserRole = 'Administrador' | 'Atendente' | 'Vendedor' | 'Técnico';
 
 export interface AppUser {
@@ -291,6 +293,7 @@ export interface OsPrefillDraft {
   brand?: string;
   model?: string;
   device?: string;
+  deviceCategory?: DeviceCategory;
   imei?: string;
   issue?: string;
   notes?: string;
@@ -317,6 +320,7 @@ export interface ServiceOrder {
   device: string;
   brand?: string;
   model?: string;
+  deviceCategory?: DeviceCategory;
   deviceType: 'smartphone' | 'tablet' | 'watch' | 'laptop';
   imei: string;
   /** LGPD: Apenas indicador booleano persistido; senha/padrão ficam só em RAM da sessão */

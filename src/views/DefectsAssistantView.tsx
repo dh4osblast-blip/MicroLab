@@ -13,7 +13,10 @@ import {
   X,
 } from 'lucide-react';
 import { useLabStore } from '../store/useLabStore';
-import { ENTRY_CHECKLIST_ITEMS } from '../utils/pricing';
+import {
+  getEntryChecklistItems,
+  resolveOrderDeviceCategory,
+} from '../utils/pricing';
 import { buildLocalBenchCopilotFallback } from '../utils/preDiagnosis';
 import {
   analyzeBenchCopilot,
@@ -235,7 +238,7 @@ export const DefectsAssistantView: React.FC = () => {
     }
 
     const checklistSummary = linkedOrder?.entryChecklist7
-      ? ENTRY_CHECKLIST_ITEMS.map((item) => {
+      ? getEntryChecklistItems(resolveOrderDeviceCategory(linkedOrder)).map((item) => {
           const val = linkedOrder.entryChecklist7?.[item.key];
           const label = val === 's' ? 'Sim' : val === 'n' ? 'Não' : 'Não testado';
           return `${item.label}: ${label}`;

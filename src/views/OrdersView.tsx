@@ -13,6 +13,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  Laptop,
   Link2,
   Loader2,
   Lock,
@@ -28,6 +29,7 @@ import {
   ShieldCheck,
   Smartphone,
   Sparkles,
+  Tablet,
   Trash2,
   WifiOff,
   Wrench,
@@ -36,6 +38,7 @@ import {
   Zap,
 } from 'lucide-react';
 import {
+  DeviceCategory,
   OrderExtraItem,
   OrderStatus,
   OrderTriage,
@@ -49,6 +52,8 @@ import {
   ENTRY_CHECKLIST_ITEMS,
   EXIT_CHECKLIST_ITEMS,
   IMEI_TRIAGE_STATUSES,
+  NOTEBOOK_ACCESSORIES_PRESETS,
+  NOTEBOOK_ENTRY_CHECKLIST_ITEMS,
   addDiasIso,
   arredondarPreco,
   calcDiagTaxa,
@@ -58,10 +63,13 @@ import {
   calcTaxaEntregaByNeighborhood,
   diasAteIso,
   formatDateBR,
+  getAccessoriesPresets,
+  getEntryChecklistItems,
   getOrderWarrantyBadge,
   isQuoteExpired,
   planejar,
   previsaoNova,
+  resolveOrderDeviceCategory,
   resolveOrderWarrantyDays,
   resolveOrderWarrantyUntil,
   todayIsoLocal,
@@ -111,6 +119,7 @@ interface OsFormState {
   status: OrderStatus;
   brand: string;
   model: string;
+  deviceCategory: DeviceCategory;
   imei: string;
   passcode: string;
   patternNodes: number[];
@@ -165,6 +174,9 @@ const normStr = (s: string) =>
 const emptyEntryChecklist7 = (): Record<string, 's' | 'n' | 't'> => {
   const rec: Record<string, 's' | 'n' | 't'> = {};
   ENTRY_CHECKLIST_ITEMS.forEach((item) => {
+    rec[item.key] = 't';
+  });
+  NOTEBOOK_ENTRY_CHECKLIST_ITEMS.forEach((item) => {
     rec[item.key] = 't';
   });
   return rec;
@@ -323,6 +335,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       status: prefill?.status || 'Orçamento',
       brand: prefill?.brand || '',
       model: prefill?.model || '',
+      deviceCategory: prefill?.deviceCategory || 'smartphone',
       imei: prefill?.imei || '',
       passcode: '',
       patternNodes: [],
@@ -372,10 +385,14 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
   };
 
   const openEditOsModal = (o: ServiceOrder) => {
-    const presetSet = new Set<string>(ACCESSORIES_PRESETS as readonly string[]);
+    const presetSet = new Set<string>([
+      ...(ACCESSORIES_PRESETS as readonly string[]),
+      ...(NOTEBOOK_ACCESSORIES_PRESETS as readonly string[]),
+    ]);
     const ac = o.accessories || [];
     const customAc = ac.filter((x) => !presetSet.has(x)).join(', ');
     const modelStr = o.model || (!o.brand ? o.device : o.device.replace(new RegExp(`^${o.brand}\\s*`, 'i'), '').trim());
+    const resolvedCategory = resolveOrderDeviceCategory(o);
 
     const ck7 = emptyEntryChecklist7();
     if (o.entryChecklist7) {
@@ -425,6 +442,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       status: o.status,
       brand: o.brand || '',
       model: modelStr || o.device,
+      deviceCategory: resolvedCategory,
       imei: o.imei === 'Não informado' ? '' : o.imei || '',
       passcode: getVolatileSecret(o.id)?.passcode || '',
       patternNodes: getVolatileSecret(o.id)?.patternNodes || [],
@@ -531,6 +549,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       clientId: draft.clientId ?? '',
       brand: draft.brand || '',
       model: draft.model || draft.device || '',
+      deviceCategory: draft.deviceCategory || 'smartphone',
       imei: draft.imei || '',
       issue: draft.issue || '',
       notes: draft.notes || '',
@@ -906,11 +925,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
         brand: form.brand.trim(),
         model: form.model.trim(),
         device: deviceLabel,
-        deviceType: deviceLabel.toLowerCase().includes('ipad') || deviceLabel.toLowerCase().includes('tab')
-          ? 'tablet'
-          : deviceLabel.toLowerCase().includes('watch')
-          ? 'watch'
-          : 'smartphone',
+        deviceCategory: form.deviceCategory,
+        deviceType:
+          form.deviceCategory === 'notebook'
+            ? 'laptop'
+            : form.deviceCategory === 'tablet'
+              ? 'tablet'
+              : deviceLabel.toLowerCase().includes('watch')
+                ? 'watch'
+                : 'smartphone',
         imei: form.imei.trim() || 'Não informado',
         hasPasscode: Boolean(form.passcode.trim() || form.patternNodes.length > 0),
         accessories: allAccessories,
@@ -1022,14 +1045,15 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       );
     }
 
-    if (isActiveStatus && statusChanged && !nextTriage.imeiSt && !nextTriage.semImei) {
+    const isNotebook = form.deviceCategory === 'notebook';
+    if (!isNotebook && isActiveStatus && statusChanged && !nextTriage.imeiSt && !nextTriage.semImei) {
       warnings.push(
         'Status do IMEI não foi registrado. Consulte *#06# em consultaaparelhoimpedido.com.br (se o aparelho entrou apagado, ficará registrado que seguiu sem consulta).'
       );
       nextTriage.semImei = nowTag;
     }
 
-    if (isActiveStatus && nextTriage.imeiSt === 'impedido' && !nextTriage.impOk) {
+    if (!isNotebook && isActiveStatus && nextTriage.imeiSt === 'impedido' && !nextTriage.impOk) {
       warnings.push(
         'ALERTA FORTE: IMEI marcado como IMPEDIDO / BLOQUEADO (restrição registrada). Avalie recusar o serviço ou registrar ciência do cliente.'
       );
@@ -1077,10 +1101,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
     }
     const warnings: string[] = [];
     const isActive = nextSt !== 'Orçamento';
-    if (isActive && !order.triage?.imeiSt && !order.triage?.semImei) {
+    const isNotebookOrder = resolveOrderDeviceCategory(order) === 'notebook';
+    if (!isNotebookOrder && isActive && !order.triage?.imeiSt && !order.triage?.semImei) {
       warnings.push('IMEI ainda não consultado nesta OS.');
     }
-    if (isActive && order.triage?.imeiSt === 'impedido' && !order.triage?.impOk) {
+    if (!isNotebookOrder && isActive && order.triage?.imeiSt === 'impedido' && !order.triage?.impOk) {
       warnings.push('ALERTA: IMEI marcado como IMPEDIDO / BLOQUEADO.');
     }
     if (['Pronto', 'Pronto Retirada', 'Entregue'].includes(nextSt)) {
@@ -1109,6 +1134,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       clientId: state.clients.some((c) => c.id === o.clientId) ? o.clientId : '',
       brand: o.brand || '',
       model: o.model || o.device,
+      deviceCategory: resolveOrderDeviceCategory(o),
       imei: o.imei === 'Não informado' ? '' : o.imei,
       issue: `Retorno de garantia da OS ${o.code}`,
       notes: `Retorno dentro da garantia (OS ${o.code})`,
@@ -1209,7 +1235,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
       return words.some((w) => issueNorm.includes(w));
     });
 
-    const checklistSummary = ENTRY_CHECKLIST_ITEMS.map((item) => {
+    const checklistSummary = getEntryChecklistItems(resolveOrderDeviceCategory(o)).map((item) => {
       const v = o.entryChecklist7?.[item.key];
       const lbl = v === 's' ? 'Sim' : v === 'n' ? 'Não' : 'Não testado';
       return `${item.label}: ${lbl}`;
@@ -1889,7 +1915,8 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       <Wrench className="w-3.5 h-3.5 text-[#0056ab]" />
                       <span>Laudo Técnico &amp; Triagem</span>
                     </div>
-                    {activeOrder.triage?.imeiSt && (
+                    {resolveOrderDeviceCategory(activeOrder) !== 'notebook' &&
+                      activeOrder.triage?.imeiSt && (
                       <span
                         className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
                           activeOrder.triage.imeiSt === 'impedido'
@@ -1908,7 +1935,12 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     {activeOrder.notes || activeOrder.diagnosis}
                   </p>
                   <div className="pt-1.5 grid grid-cols-2 gap-1.5 text-[11px] text-[#414752]">
-                    <div>IMEI/SN: <strong className="font-mono">{activeOrder.imei}</strong></div>
+                    <div>
+                      {resolveOrderDeviceCategory(activeOrder) === 'notebook'
+                        ? 'S/N (Serial):'
+                        : 'IMEI/SN:'}{' '}
+                      <strong className="font-mono">{activeOrder.imei}</strong>
+                    </div>
                     <div>Técnico: <strong>{activeOrder.technician}</strong></div>
                     <div>
                       Saída:{' '}
@@ -2864,13 +2896,53 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                 <summary className="text-xs font-bold text-[#091b36] cursor-pointer">
                   Dados do Aparelho &amp; Defeito
                 </summary>
+
+                {/* Seletor rápido de categoria do aparelho */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl bg-[#F3F6FB] border border-[#D9E0EC] p-2.5">
+                  <span className="text-[11px] font-semibold text-[#414752]">
+                    Categoria do Aparelho
+                  </span>
+                  <div className="grid grid-cols-3 gap-1.5 sm:w-auto w-full">
+                    {(
+                      [
+                        { id: 'smartphone', label: 'Smartphone', Icon: Smartphone },
+                        { id: 'tablet', label: 'Tablet', Icon: Tablet },
+                        { id: 'notebook', label: 'Notebook', Icon: Laptop },
+                      ] as const
+                    ).map(({ id, label, Icon }) => {
+                      const active = form.deviceCategory === id;
+                      return (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() =>
+                            setForm((p) => (p ? { ...p, deviceCategory: id } : p))
+                          }
+                          className={`inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-bold transition-colors cursor-pointer ${
+                            active
+                              ? 'bg-[#0056ab] border-[#0056ab] text-white shadow-xs'
+                              : 'bg-white border-[#D9E0EC] text-[#414752] hover:bg-[#EAF2FD]'
+                          }`}
+                        >
+                          <Icon className="w-3.5 h-3.5 shrink-0" />
+                          <span>{label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
                   <div>
                     <label className="block text-[10px] font-semibold text-[#414752] mb-1">Marca</label>
                     <input
                       value={form.brand}
                       onChange={(e) => setForm((p) => (p ? { ...p, brand: e.target.value } : p))}
-                      placeholder="Ex.: Samsung"
+                      placeholder={
+                        form.deviceCategory === 'notebook'
+                          ? 'Ex.: Dell / Lenovo / Apple'
+                          : 'Ex.: Samsung'
+                      }
                       className="w-full rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-1.5 text-xs"
                     />
                   </div>
@@ -2880,15 +2952,30 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                       required
                       value={form.model}
                       onChange={(e) => setForm((p) => (p ? { ...p, model: e.target.value } : p))}
-                      placeholder="Ex.: Galaxy A14"
+                      placeholder={
+                        form.deviceCategory === 'notebook'
+                          ? 'Ex.: Inspiron 15 / IdeaPad 3'
+                          : form.deviceCategory === 'tablet'
+                            ? 'Ex.: iPad 10 / Tab S9'
+                            : 'Ex.: Galaxy A14'
+                      }
                       className="w-full rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-1.5 text-xs"
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] font-semibold text-[#414752] mb-1">IMEI / Nº Série</label>
+                    <label className="block text-[10px] font-semibold text-[#414752] mb-1">
+                      {form.deviceCategory === 'notebook'
+                        ? 'Número de Série / Serial (S/N)'
+                        : 'IMEI / Nº Série'}
+                    </label>
                     <input
                       value={form.imei}
                       onChange={(e) => setForm((p) => (p ? { ...p, imei: e.target.value } : p))}
+                      placeholder={
+                        form.deviceCategory === 'notebook'
+                          ? 'S/N na etiqueta inferior ou BIOS'
+                          : '*#06# ou nº de série'
+                      }
                       className="w-full rounded-lg border border-[#D9E0EC] bg-[#F3F6FB] px-2.5 py-1.5 text-xs font-mono"
                     />
                   </div>
@@ -2909,6 +2996,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                 <div className="space-y-2">
                   <GeminiOcrButton
                     compact
+                    isNotebook={form.deviceCategory === 'notebook'}
                     onExtracted={(res) =>
                       setForm((p) =>
                         p
@@ -2927,13 +3015,20 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                     orders={state.orders}
                     excludeOrderId={form.editingId}
                     compact
+                    isNotebook={form.deviceCategory === 'notebook'}
                   />
                 </div>
 
                 <div>
                   <span className="block text-[10px] font-semibold text-[#414752] mb-1">Acessórios deixados</span>
                   <div className="flex flex-wrap gap-2">
-                    {ACCESSORIES_PRESETS.map((ac) => {
+                    {(() => {
+                      const activePresets = getAccessoriesPresets(form.deviceCategory);
+                      const extraSelected = form.accessories.filter(
+                        (a) => !activePresets.includes(a)
+                      );
+                      return [...activePresets, ...extraSelected];
+                    })().map((ac) => {
                       const active = form.accessories.includes(ac);
                       return (
                         <button
@@ -3025,10 +3120,10 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
               {/* Checklist de Entrada (7 itens CKL) */}
               <details className="rounded-xl border border-[#D9E0EC] p-3.5 space-y-2">
                 <summary className="text-xs font-bold text-[#091b36] cursor-pointer">
-                  Checklist de Entrada (7 itens · Sim / Não / Não testado)
+                  Checklist de Entrada{form.deviceCategory === 'notebook' ? ' · Notebook' : ''} (7 itens · Sim / Não / Não testado)
                 </summary>
                 <div className="space-y-1.5 pt-2">
-                  {ENTRY_CHECKLIST_ITEMS.map((item) => {
+                  {getEntryChecklistItems(form.deviceCategory).map((item) => {
                     const val = form.entryChecklist7[item.key] || 't';
                     return (
                       <div
@@ -3192,56 +3287,62 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
               {/* Triagem de Entrada e Segurança (TRI) */}
               <details open className="rounded-xl border border-[#D9E0EC] p-3.5 space-y-2.5">
                 <summary className="text-xs font-bold text-[#091b36] cursor-pointer">
-                  Triagem IMEI &amp; Segurança (ESD / Bateria / Oxidação)
+                  {form.deviceCategory === 'notebook'
+                    ? 'Triagem & Segurança (ESD / Bateria / Oxidação)'
+                    : 'Triagem IMEI & Segurança (ESD / Bateria / Oxidação)'}
                 </summary>
-                <p className="text-[11px] text-[#727784]">
-                  Consulte o IMEI (*#06#) em{' '}
-                  <a
-                    href="https://consultaaparelhoimpedido.com.br"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[#0056ab] font-semibold underline"
-                  >
-                    consultaaparelhoimpedido.com.br
-                  </a>
-                  .
-                </p>
-                <div className="flex flex-wrap gap-1.5">
-                  {[...IMEI_TRIAGE_STATUSES, { value: '' as const, label: 'Não consultado' }].map((opt) => (
-                    <button
-                      key={opt.value || 'empty'}
-                      type="button"
-                      onClick={() =>
-                        setForm((p) =>
-                          p ? { ...p, triage: { ...p.triage, imeiSt: opt.value } } : p
-                        )
-                      }
-                      className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold cursor-pointer ${
-                        (form.triage.imeiSt || '') === opt.value
-                          ? opt.value === 'impedido'
-                            ? 'bg-[#DC2626] border-[#DC2626] text-white'
-                            : opt.value === 'suspeito'
-                            ? 'bg-[#D97706] border-[#D97706] text-white'
-                            : opt.value === 'regular'
-                            ? 'bg-[#16A34A] border-[#16A34A] text-white'
-                            : 'bg-[#091b36] border-[#091b36] text-white'
-                          : 'bg-[#F3F6FB] border-[#D9E0EC] text-[#414752]'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
+                {form.deviceCategory !== 'notebook' && (
+                  <>
+                    <p className="text-[11px] text-[#727784]">
+                      Consulte o IMEI (*#06#) em{' '}
+                      <a
+                        href="https://consultaaparelhoimpedido.com.br"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[#0056ab] font-semibold underline"
+                      >
+                        consultaaparelhoimpedido.com.br
+                      </a>
+                      .
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {[...IMEI_TRIAGE_STATUSES, { value: '' as const, label: 'Não consultado' }].map((opt) => (
+                        <button
+                          key={opt.value || 'empty'}
+                          type="button"
+                          onClick={() =>
+                            setForm((p) =>
+                              p ? { ...p, triage: { ...p.triage, imeiSt: opt.value } } : p
+                            )
+                          }
+                          className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold cursor-pointer ${
+                            (form.triage.imeiSt || '') === opt.value
+                              ? opt.value === 'impedido'
+                                ? 'bg-[#DC2626] border-[#DC2626] text-white'
+                                : opt.value === 'suspeito'
+                                ? 'bg-[#D97706] border-[#D97706] text-white'
+                                : opt.value === 'regular'
+                                ? 'bg-[#16A34A] border-[#16A34A] text-white'
+                                : 'bg-[#091b36] border-[#091b36] text-white'
+                              : 'bg-[#F3F6FB] border-[#D9E0EC] text-[#414752]'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
 
-                {form.triage.imeiSt === 'impedido' && (
-                  <div className="rounded-lg bg-[#FEE2E2] border border-[#DC2626]/30 p-2.5 text-[11px] font-semibold text-[#DC2626]">
-                    IMEI IMPEDIDO / BLOQUEADO: o aparelho tem restrição registrada. Risco legal e de prejuízo; avalie recusar o serviço.
-                  </div>
-                )}
-                {form.triage.imeiSt === 'suspeito' && (
-                  <div className="rounded-lg bg-[#FFF7E6] border border-[#D97706]/30 p-2.5 text-[11px] font-semibold text-[#D97706]">
-                    IMEI suspeito: confirme com o cliente a origem do aparelho antes de reparar.
-                  </div>
+                    {form.triage.imeiSt === 'impedido' && (
+                      <div className="rounded-lg bg-[#FEE2E2] border border-[#DC2626]/30 p-2.5 text-[11px] font-semibold text-[#DC2626]">
+                        IMEI IMPEDIDO / BLOQUEADO: o aparelho tem restrição registrada. Risco legal e de prejuízo; avalie recusar o serviço.
+                      </div>
+                    )}
+                    {form.triage.imeiSt === 'suspeito' && (
+                      <div className="rounded-lg bg-[#FFF7E6] border border-[#D97706]/30 p-2.5 text-[11px] font-semibold text-[#D97706]">
+                        IMEI suspeito: confirme com o cliente a origem do aparelho antes de reparar.
+                      </div>
+                    )}
+                  </>
                 )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
@@ -4602,7 +4703,11 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                 <strong>{activeOrder.device}</strong>
               </div>
               <div className="px-1.5 py-0.5 border-b border-black">
-                <span className="block text-[8px] uppercase text-gray-600">IMEI / Série</span>
+                <span className="block text-[8px] uppercase text-gray-600">
+                  {resolveOrderDeviceCategory(activeOrder) === 'notebook'
+                    ? 'S/N (Serial)'
+                    : 'IMEI / Série'}
+                </span>
                 <strong className="font-mono">{activeOrder.imei}</strong>
               </div>
               <div className="px-1.5 py-0.5 border-r border-b border-black">
@@ -4649,7 +4754,7 @@ export const OrdersView: React.FC<OrdersViewProps> = ({
                 </tr>
               </thead>
               <tbody>
-                {ENTRY_CHECKLIST_ITEMS.map((item) => {
+                {getEntryChecklistItems(resolveOrderDeviceCategory(activeOrder)).map((item) => {
                   const st = activeOrder.entryChecklist7?.[item.key] || 't';
                   return (
                     <tr key={item.key} className="border-b border-black last:border-b-0">

@@ -55,6 +55,8 @@ service cloud.firestore {
         && (!('entryChecklist' in data) || (data.entryChecklist is list && data.entryChecklist.size() <= 16 && (data.entryChecklist.size() == 0 || data.entryChecklist[0] is map)))
         && (!('paidAmount' in data) || (data.paidAmount is int || data.paidAmount is float))
         && (!('signalPaid' in data) || (data.signalPaid is int || data.signalPaid is float))
+        && (!('deviceCategory' in data) || (data.deviceCategory is string && data.deviceCategory in ['smartphone', 'tablet', 'notebook']))
+        && (!('deviceSerial' in data) || (data.deviceSerial is string && data.deviceSerial.size() <= 80))
         && (!('updatedAtMs' in data) || data.updatedAtMs is int);
     }
 
@@ -70,7 +72,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'token', 'ownerUid', 'orderId', 'orderCode', 'status',
           'osStatus', 'expectedDeliveryDate', 'createdDateLabel', 'technician',
-          'clientName', 'device', 'issue', 'technicalReport', 'aiExplanation',
+          'clientName', 'device', 'deviceCategory', 'deviceSerial', 'issue', 'technicalReport', 'aiExplanation',
           'entryChecklist', 'serviceName', 'servicePrice', 'partsPrice',
           'items', 'deliveryFee', 'discount', 'totalAmount', 'paidAmount',
           'signalPaid', 'warrantyDays', 'condExec', 'warrantyText',
@@ -140,6 +142,8 @@ service cloud.firestore {
           'aiExplanation',
           'entryChecklist',
           'evidencePhotos',
+          'deviceCategory',
+          'deviceSerial',
           'paidAmount',
           'signalPaid',
           'updatedAtMs'

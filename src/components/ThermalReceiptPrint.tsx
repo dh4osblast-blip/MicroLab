@@ -5,6 +5,7 @@ import {
   calcOrderTotalAmount,
   calcSaleTotalAmount,
   formatDateBR,
+  resolveOrderDeviceCategory,
 } from '../utils/pricing';
 import { buildPixPayload } from '../utils/pix';
 import { PixQrGraphic } from './PixModal';
@@ -114,7 +115,10 @@ export const OrderThermalReceipt: React.FC<OrderThermalReceiptProps> = ({
         </div>
         {order.imei && order.imei !== 'Não informado' && (
           <div>
-            <strong>IMEI:</strong> {order.imei}
+            <strong>
+              {resolveOrderDeviceCategory(order) === 'notebook' ? 'S/N (Serial):' : 'IMEI:'}
+            </strong>{' '}
+            {order.imei}
           </div>
         )}
         <div>

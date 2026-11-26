@@ -5,11 +5,13 @@ import {
   ChevronLeft,
   ChevronRight,
   Eraser,
+  Laptop,
   Lightbulb,
   Lock,
   Search,
   ShieldCheck,
   Smartphone,
+  Tablet,
   Wrench,
   X,
 } from 'lucide-react';
@@ -535,7 +537,13 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
         <section className="bg-white rounded-[16px] shadow-[0_2px_10px_rgba(16,32,64,0.05)] p-4">
           <div className="flex items-center justify-between gap-2 mb-3">
             <div className="flex items-center gap-1.5 min-w-0">
-              <Smartphone className="w-4 h-4 text-[#1B6FD1] shrink-0" />
+              {doc.deviceCategory === 'notebook' ? (
+                <Laptop className="w-4 h-4 text-[#1B6FD1] shrink-0" />
+              ) : doc.deviceCategory === 'tablet' ? (
+                <Tablet className="w-4 h-4 text-[#1B6FD1] shrink-0" />
+              ) : (
+                <Smartphone className="w-4 h-4 text-[#1B6FD1] shrink-0" />
+              )}
               <h2 className="text-[14px] font-semibold text-[#102040] truncate">
                 Ordem de Serviço {doc.orderCode}
               </h2>
@@ -552,6 +560,17 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
               </span>
               <span className="text-[12px] font-semibold text-slate-800">{doc.device}</span>
             </div>
+
+            {Boolean(doc.deviceSerial && doc.deviceSerial.trim()) && (
+              <div className="bg-[#F8FAFC] rounded-xl p-2.5 border border-slate-100 col-span-2">
+                <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                  {doc.deviceCategory === 'notebook' ? 'S/N (Serial)' : 'IMEI'}
+                </span>
+                <span className="text-[12px] font-semibold font-mono text-slate-800 break-all">
+                  {doc.deviceSerial}
+                </span>
+              </div>
+            )}
 
             {createdDateDisplay && (
               <div className="bg-[#F8FAFC] rounded-xl p-2.5 border border-slate-100">

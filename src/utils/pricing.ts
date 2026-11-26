@@ -1,6 +1,7 @@
 import {
   CashTransaction,
   Client,
+  DeviceCategory,
   FixedExpenseItem,
   LabConfig,
   MicroComplexityLevel,
@@ -529,6 +530,16 @@ export const ENTRY_CHECKLIST_ITEMS = [
   { key: 'liq', label: 'Molhou / contato com líquido?' },
 ] as const;
 
+export const NOTEBOOK_ENTRY_CHECKLIST_ITEMS = [
+  { key: 'nb_liga', label: 'Liga e dá vídeo?' },
+  { key: 'nb_tela', label: 'Tela e dobradiças ok?' },
+  { key: 'nb_teclado', label: 'Teclado e Touchpad ok?' },
+  { key: 'nb_portas', label: 'Portas USB / HDMI / Carga ok?' },
+  { key: 'nb_bateria', label: 'Bateria segura carga / sem inchaço?' },
+  { key: 'nb_carcaca', label: 'Carcaça e parafusos íntegros?' },
+  { key: 'nb_liq', label: 'Sinais de líquido / oxidação?' },
+] as const;
+
 export const EXIT_CHECKLIST_ITEMS = [
   { key: 'carga', label: 'Carga (tensão/corrente)' },
   { key: 'touch', label: 'Touch e display' },
@@ -555,6 +566,38 @@ export const ACCESSORIES_PRESETS = [
   'Carregador/cabo',
   'Película',
 ] as const;
+
+export const NOTEBOOK_ACCESSORIES_PRESETS = [
+  'Carregador / Fonte',
+  'Cabo de força',
+  'Case / Mochila',
+  'Mouse / Receptor USB',
+] as const;
+
+export function resolveOrderDeviceCategory(
+  o?: Pick<ServiceOrder, 'deviceCategory' | 'deviceType'> | null
+): DeviceCategory {
+  if (
+    o?.deviceCategory === 'smartphone' ||
+    o?.deviceCategory === 'tablet' ||
+    o?.deviceCategory === 'notebook'
+  ) {
+    return o.deviceCategory;
+  }
+  if (o?.deviceType === 'laptop') return 'notebook';
+  if (o?.deviceType === 'tablet') return 'tablet';
+  return 'smartphone';
+}
+
+export function getEntryChecklistItems(
+  category: DeviceCategory
+): readonly { key: string; label: string }[] {
+  return category === 'notebook' ? NOTEBOOK_ENTRY_CHECKLIST_ITEMS : ENTRY_CHECKLIST_ITEMS;
+}
+
+export function getAccessoriesPresets(category: DeviceCategory): readonly string[] {
+  return category === 'notebook' ? NOTEBOOK_ACCESSORIES_PRESETS : ACCESSORIES_PRESETS;
+}
 
 export const CANONICAL_ORDER_STATUSES = [
   'Orçamento',

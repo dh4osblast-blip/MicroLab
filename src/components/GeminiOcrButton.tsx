@@ -16,11 +16,13 @@ import {
 interface GeminiOcrButtonProps {
   onExtracted: (result: LabelOcrResult) => void;
   compact?: boolean;
+  isNotebook?: boolean;
 }
 
 export const GeminiOcrButton: React.FC<GeminiOcrButtonProps> = ({
   onExtracted,
   compact = false,
+  isNotebook = false,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
@@ -66,7 +68,7 @@ export const GeminiOcrButton: React.FC<GeminiOcrButtonProps> = ({
       const partsSummary = [
         result.marca && `Marca: ${result.marca}`,
         result.modeloComercial && `Modelo: ${result.modeloComercial}`,
-        result.imei && `IMEI: ${result.imei} (${result.luhn.label})`,
+        result.imei && `${isNotebook ? 'S/N' : 'IMEI'}: ${result.imei} (${result.luhn.label})`,
       ].filter(Boolean);
 
       if (partsSummary.length === 0) {
@@ -74,10 +76,12 @@ export const GeminiOcrButton: React.FC<GeminiOcrButtonProps> = ({
           tone: 'warn',
           text:
             result.observacao ||
-            'Não foi possível identificar modelo ou IMEI nítidos nesta foto. Tente aproximar com boa luz.',
+            `Não foi possível identificar modelo ou ${
+              isNotebook ? 'S/N' : 'IMEI'
+            } nítidos nesta foto. Tente aproximar com boa luz.`,
         });
       } else {
-        const hasInvalidImei = Boolean(result.imei) && result.luhn.status !== 'valid';
+        const hasInvalidImei = !isNotebook && Boolean(result.imei) && result.luhn.status !== 'valid';
         const fallbackNote =
           result.isFallbackModel && result.modelUsed
             ? ` · Respondido via modelo alternativo: ${result.modelUsed}`
@@ -106,7 +110,9 @@ export const GeminiOcrButton: React.FC<GeminiOcrButtonProps> = ({
           disabled={busy}
           title={
             availability.available
-              ? 'Fotografar etiqueta, caixa, tela *#06# ou bandeja SIM para preencher Marca, Modelo e IMEI'
+              ? isNotebook
+                ? 'Fotografar etiqueta inferior ou caixa do notebook para preencher Marca e Modelo'
+                : 'Fotografar etiqueta, caixa, tela *#06# ou bandeja SIM para preencher Marca, Modelo e IMEI'
               : availability.message
           }
           className={`inline-flex items-center gap-1.5 rounded-lg border font-semibold transition-colors cursor-pointer disabled:opacity-60 ${
@@ -127,7 +133,13 @@ export const GeminiOcrButton: React.FC<GeminiOcrButtonProps> = ({
               <Sparkles className="w-3 h-3 shrink-0" />
             </>
           )}
-          <span>{busy ? 'Lendo etiqueta...' : 'Ler Etiqueta / IMEI por Foto'}</span>
+          <span>
+            {busy
+              ? 'Lendo etiqueta...'
+              : isNotebook
+                ? 'Ler Etiqueta / S/N por Foto'
+                : 'Ler Etiqueta / IMEI por Foto'}
+          </span>
         </button>
 
         {!availability.available && (
