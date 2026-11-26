@@ -44,6 +44,24 @@ const formatServerIsoPtBr = (iso?: string, fallbackMs?: number) => {
 const stripSimpleMarkdownBold = (text: string) =>
   String(text || '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
 
+const renderFormattedBoldText = (text: string): React.ReactNode => {
+  const normalized = String(text || '')
+    .replace(/\*\*(.+?)\*\*/g, '*$1*')
+    .trim();
+  if (!normalized) return null;
+  const parts = normalized.split(/(\*(?!\s)[^*\n]+?(?<!\s)\*)/g);
+  return parts.map((part, idx) => {
+    if (part.length >= 3 && part.startsWith('*') && part.endsWith('*')) {
+      return (
+        <strong key={idx} className="font-semibold text-[#102040]">
+          {part.slice(1, -1)}
+        </strong>
+      );
+    }
+    return <React.Fragment key={idx}>{part}</React.Fragment>;
+  });
+};
+
 function exportCompactPngSignature(sourceCanvas: HTMLCanvasElement): string {
   const maxW = 400;
   const scale = sourceCanvas.width > maxW ? maxW / sourceCanvas.width : 1;
@@ -168,8 +186,11 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
   const [submitError, setSubmitError] = useState('');
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
+  const canvasWrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const isDrawingRef = useRef(false);
+  const hasDrawnRef = useRef(false);
+  const canvasDprRef = useRef(1);
 
   useEffect(() => {
     let active = true;
@@ -245,13 +266,71 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [lightboxIndex, validPhotos.length]);
 
+  useEffect(() => {
+    const wrap = canvasWrapRef.current;
+    const canvas = canvasRef.current;
+    if (
+      !wrap ||
+      !canvas ||
+      loading ||
+      !doc ||
+      doc.status === 'accepted' ||
+      doc.osStatus === 'Cancelado'
+    ) {
+      return;
+    }
+
+    const syncCanvasSize = () => {
+      const rect = wrap.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvasDprRef.current = dpr;
+      const targetW = Math.max(1, Math.round(rect.width * dpr));
+      const targetH = Math.max(1, Math.round(rect.height * dpr));
+      if (Math.abs(canvas.width - targetW) <= 1 && Math.abs(canvas.height - targetH) <= 1) {
+        return;
+      }
+
+      let snapshot: HTMLCanvasElement | null = null;
+      if (hasDrawnRef.current && canvas.width > 0 && canvas.height > 0) {
+        snapshot = document.createElement('canvas');
+        snapshot.width = canvas.width;
+        snapshot.height = canvas.height;
+        const snapCtx = snapshot.getContext('2d');
+        if (snapCtx) {
+          snapCtx.drawImage(canvas, 0, 0);
+        }
+      }
+
+      canvas.width = targetW;
+      canvas.height = targetH;
+
+      if (snapshot) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(snapshot, 0, 0, targetW, targetH);
+        }
+      }
+    };
+
+    syncCanvasSize();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => syncCanvasSize());
+      observer.observe(wrap);
+      return () => observer.disconnect();
+    }
+    window.addEventListener('resize', syncCanvasSize);
+    return () => window.removeEventListener('resize', syncCanvasSize);
+  }, [loading, doc]);
+
   const getPointerPos = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
     return {
-      x: ((e.clientX - rect.left) / rect.width) * canvas.width,
-      y: ((e.clientY - rect.top) / rect.height) * canvas.height,
+      x: ((e.clientX - rect.left) / Math.max(1, rect.width)) * canvas.width,
+      y: ((e.clientY - rect.top) / Math.max(1, rect.height)) * canvas.height,
     };
   };
 
@@ -263,7 +342,7 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
     canvas.setPointerCapture(e.pointerId);
     const pos = getPointerPos(e);
     ctx.strokeStyle = '#102040';
-    ctx.lineWidth = 2.6;
+    ctx.lineWidth = 2.4 * canvasDprRef.current;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
@@ -280,7 +359,10 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
     const pos = getPointerPos(e);
     ctx.lineTo(pos.x, pos.y);
     ctx.stroke();
-    if (!hasDrawn) setHasDrawn(true);
+    if (!hasDrawnRef.current) {
+      hasDrawnRef.current = true;
+      setHasDrawn(true);
+    }
   };
 
   const handlePointerUp = () => {
@@ -293,6 +375,7 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    hasDrawnRef.current = false;
     setHasDrawn(false);
   };
 
@@ -397,13 +480,16 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
     (doc.createdDateLabel || '').trim() ||
     (doc.createdAtMs ? new Date(doc.createdAtMs).toLocaleDateString('pt-BR') : '');
 
-  const cleanAiExplanation = stripSimpleMarkdownBold(doc.aiExplanation || '');
+  const rawAiExplanation = (doc.aiExplanation || '').trim();
+  const cleanAiExplanation = stripSimpleMarkdownBold(rawAiExplanation);
   const cleanTechnicalReport = stripSimpleMarkdownBold(doc.technicalReport || '');
   const showTechnicalReportSeparately =
-    Boolean(cleanTechnicalReport) && cleanTechnicalReport !== cleanAiExplanation;
+    Boolean(cleanTechnicalReport) &&
+    cleanTechnicalReport.replace(/\*+/g, '').trim() !==
+      cleanAiExplanation.replace(/\*+/g, '').trim();
   const checklistChips = Array.isArray(doc.entryChecklist) ? doc.entryChecklist : [];
   const hasTechnicalSection = Boolean(
-    cleanAiExplanation || cleanTechnicalReport || checklistChips.length > 0
+    rawAiExplanation || cleanTechnicalReport || checklistChips.length > 0
   );
 
   const paidAmount = Math.max(0, Number(doc.paidAmount) || 0);
@@ -422,43 +508,45 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
     lightboxIndex !== null && validPhotos[lightboxIndex] ? validPhotos[lightboxIndex] : null;
 
   return (
-    <div className="min-h-screen bg-[#F3F6FB] py-4 px-3.5 flex justify-center font-sans text-[#1E293B]">
-      <div className="w-full max-w-[420px] flex flex-col gap-3.5">
-        {/* 1. InstitutionalHeader */}
-        <header className="bg-[#102040] text-white rounded-[16px] p-4 shadow-md">
-          <div className="flex items-center justify-between gap-2.5">
-            <div className="flex items-center gap-3 min-w-0">
-              <img
-                src="/pwa-192x192.png"
-                alt="MicroLab Assistência Técnica"
-                className="w-11 h-11 rounded-xl object-cover shrink-0 border border-white/15"
-              />
-              <div className="min-w-0">
-                <h1 className="text-[14px] font-semibold leading-tight truncate">
-                  MicroLab Assistência Técnica
-                </h1>
-                <p className="text-[11px] text-slate-300 leading-snug truncate">
-                  Acompanhamento &amp; Aceite Digital de OS
-                </p>
+    <div className="min-h-screen bg-[#F3F6FB] py-4 px-3.5 min-[960px]:py-8 min-[960px]:px-6 flex justify-center font-sans text-[#1E293B]">
+      <div className="w-full max-w-[440px] mx-auto min-[960px]:max-w-[1080px] flex flex-col gap-3.5 min-[960px]:gap-5">
+        {/* Topo: Cabeçalho Institucional + Status em Tempo Real */}
+        <div className="flex flex-col gap-3.5 min-[960px]:grid min-[960px]:grid-cols-12 min-[960px]:gap-5 min-[960px]:items-stretch">
+          {/* 1. InstitutionalHeader */}
+          <header className="bg-[#102040] text-white rounded-[16px] p-4 shadow-md min-[960px]:col-span-5 min-[960px]:flex min-[960px]:flex-col min-[960px]:justify-center">
+            <div className="flex items-center justify-between gap-2.5">
+              <div className="flex items-center gap-3 min-w-0">
+                <img
+                  src="/pwa-192x192.png"
+                  alt="MicroLab Assistência Técnica"
+                  className="w-11 h-11 rounded-xl object-cover shrink-0 border border-white/15"
+                />
+                <div className="min-w-0">
+                  <h1 className="text-[14px] min-[960px]:text-[15px] font-semibold leading-tight truncate">
+                    MicroLab Assistência Técnica
+                  </h1>
+                  <p className="text-[11px] text-slate-300 leading-snug truncate">
+                    Acompanhamento &amp; Aceite Digital de OS
+                  </p>
+                </div>
               </div>
+              <a
+                href={whatsappUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Contato rápido via WhatsApp"
+                className="shrink-0 inline-flex items-center gap-1.5 bg-[#16A34A] hover:bg-green-700 text-white text-[11px] font-medium px-2.5 py-1.5 rounded-full transition-colors"
+              >
+                <svg aria-hidden="true" className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
+                  <path d="M12.031 2c-5.516 0-9.969 4.453-9.969 9.969 0 1.766.469 3.484 1.344 5l-1.406 5.156 5.281-1.375c1.469.797 3.109 1.219 4.75 1.219 5.516 0 9.969-4.453 9.969-9.969S17.547 2 12.031 2zm5.813 14.125c-.25.703-1.438 1.344-2 1.422-.516.078-1.172.109-1.891-.125-.438-.141-1-.328-1.719-.641-3.016-1.313-4.984-4.359-5.141-4.563-.156-.203-1.234-1.641-1.234-3.125s.781-2.219 1.063-2.516c.281-.297.609-.375.813-.375.203 0 .406.016.578.016.188 0 .438-.078.688.516.25.609.859 2.094.938 2.25.078.156.125.344.031.547-.094.203-.141.328-.281.5-.141.172-.297.375-.422.5-.141.141-.281.297-.125.578.156.281.703 1.156 1.516 1.875 1.047.922 1.922 1.219 2.203 1.359.281.141.438.125.609-.063.172-.188.703-.828.891-1.109.188-.281.375-.234.625-.141.25.094 1.609.766 1.891.906.281.141.469.203.531.313.063.109.063.641-.188 1.344z" />
+                </svg>
+                <span>WhatsApp</span>
+              </a>
             </div>
-            <a
-              href={whatsappUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="Contato rápido via WhatsApp"
-              className="shrink-0 inline-flex items-center gap-1.5 bg-[#16A34A] hover:bg-green-700 text-white text-[11px] font-medium px-2.5 py-1.5 rounded-full transition-colors"
-            >
-              <svg aria-hidden="true" className="w-3.5 h-3.5 fill-current" viewBox="0 0 24 24">
-                <path d="M12.031 2c-5.516 0-9.969 4.453-9.969 9.969 0 1.766.469 3.484 1.344 5l-1.406 5.156 5.281-1.375c1.469.797 3.109 1.219 4.75 1.219 5.516 0 9.969-4.453 9.969-9.969S17.547 2 12.031 2zm5.813 14.125c-.25.703-1.438 1.344-2 1.422-.516.078-1.172.109-1.891-.125-.438-.141-1-.328-1.719-.641-3.016-1.313-4.984-4.359-5.141-4.563-.156-.203-1.234-1.641-1.234-3.125s.781-2.219 1.063-2.516c.281-.297.609-.375.813-.375.203 0 .406.016.578.016.188 0 .438-.078.688.516.25.609.859 2.094.938 2.25.078.156.125.344.031.547-.094.203-.141.328-.281.5-.141.172-.297.375-.422.5-.141.141-.281.297-.125.578.156.281.703 1.156 1.516 1.875 1.047.922 1.922 1.219 2.203 1.359.281.141.438.125.609-.063.172-.188.703-.828.891-1.109.188-.281.375-.234.625-.141.25.094 1.609.766 1.891.906.281.141.469.203.531.313.063.109.063.641-.188 1.344z" />
-              </svg>
-              <span>WhatsApp</span>
-            </a>
-          </div>
-        </header>
+          </header>
 
-        {/* 2. RealtimeStatusCard */}
-        <section className="bg-white rounded-[16px] shadow-[0_2px_10px_rgba(16,32,64,0.05)] p-4">
+          {/* 2. RealtimeStatusCard */}
+          <section className="bg-white rounded-[16px] shadow-[0_2px_10px_rgba(16,32,64,0.05)] p-4 min-[960px]:col-span-7 min-[960px]:flex min-[960px]:flex-col min-[960px]:justify-center">
           <div className="flex items-center justify-between gap-2 mb-3">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
               Status Atual
@@ -532,26 +620,31 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
             </div>
           )}
         </section>
+        </div>
 
-        {/* 3. ServiceOrderDetails */}
-        <section className="bg-white rounded-[16px] shadow-[0_2px_10px_rgba(16,32,64,0.05)] p-4">
-          <div className="flex items-center justify-between gap-2 mb-3">
-            <div className="flex items-center gap-1.5 min-w-0">
-              {doc.deviceCategory === 'notebook' ? (
-                <Laptop className="w-4 h-4 text-[#1B6FD1] shrink-0" />
-              ) : doc.deviceCategory === 'tablet' ? (
-                <Tablet className="w-4 h-4 text-[#1B6FD1] shrink-0" />
-              ) : (
-                <Smartphone className="w-4 h-4 text-[#1B6FD1] shrink-0" />
-              )}
-              <h2 className="text-[14px] font-semibold text-[#102040] truncate">
-                Ordem de Serviço {doc.orderCode}
-              </h2>
-            </div>
-            <span className="text-[11px] font-medium text-slate-500 truncate max-w-[46%]">
-              {doc.clientName}
-            </span>
-          </div>
+        {/* Grade Principal: 1 coluna no mobile (<960px) / 2 colunas no desktop (>=960px) */}
+        <div className="flex flex-col gap-3.5 min-[960px]:grid min-[960px]:grid-cols-12 min-[960px]:gap-5 min-[960px]:items-start">
+          {/* Coluna Esquerda (~58%): Dados do Aparelho, Laudo Técnico e Fotos */}
+          <div className="flex flex-col gap-3.5 min-[960px]:gap-5 min-[960px]:col-span-7 min-w-0">
+            {/* 3. ServiceOrderDetails */}
+            <section className="bg-white rounded-[16px] shadow-[0_2px_10px_rgba(16,32,64,0.05)] p-4 min-[960px]:p-5">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {doc.deviceCategory === 'notebook' ? (
+                    <Laptop className="w-4 h-4 text-[#1B6FD1] shrink-0" />
+                  ) : doc.deviceCategory === 'tablet' ? (
+                    <Tablet className="w-4 h-4 text-[#1B6FD1] shrink-0" />
+                  ) : (
+                    <Smartphone className="w-4 h-4 text-[#1B6FD1] shrink-0" />
+                  )}
+                  <h2 className="text-[14px] font-semibold text-[#102040] whitespace-nowrap">
+                    Ordem de Serviço {doc.orderCode}
+                  </h2>
+                </div>
+                <span className="text-[11px] min-[960px]:text-[12px] font-medium text-slate-500 text-right leading-snug break-words">
+                  {doc.clientName}
+                </span>
+              </div>
 
           <div className="grid grid-cols-2 gap-2.5">
             <div className="bg-[#F8FAFC] rounded-xl p-2.5 border border-slate-100 col-span-2">
@@ -607,7 +700,7 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
 
         {/* 4. TechnicalReportCard (Condicional) */}
         {hasTechnicalSection && (
-          <section className="rounded-[16px] shadow-[0_2px_10px_rgba(16,32,64,0.05)] p-4 border border-[#1B6FD1]/35 bg-gradient-to-b from-[#F8FBFF] to-white">
+          <section className="rounded-[16px] shadow-[0_2px_10px_rgba(16,32,64,0.05)] p-4 min-[960px]:p-5 border border-[#1B6FD1]/35 bg-gradient-to-b from-[#F8FBFF] to-white">
             <div className="flex items-start gap-2.5 mb-2.5">
               <div className="w-8 h-8 rounded-xl bg-[#1B6FD1]/10 text-[#1B6FD1] flex items-center justify-center shrink-0">
                 <Lightbulb className="w-4 h-4" />
@@ -617,21 +710,21 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
                   Laudo Técnico &amp; Diagnóstico
                 </h2>
                 <p className="text-[11px] text-slate-500 leading-snug mt-0.5">
-                  {cleanAiExplanation
+                  {rawAiExplanation
                     ? 'Parecer técnico explicado de forma clara para você (traduzido com IA)'
                     : 'Parecer técnico e inspeção de entrada da bancada'}
                 </p>
               </div>
             </div>
 
-            {(cleanAiExplanation || cleanTechnicalReport) && (
-              <div className="space-y-2.5 text-[12px] text-slate-700 leading-relaxed bg-white rounded-xl p-3 border border-slate-100">
-                {cleanAiExplanation && (
-                  <p className="whitespace-pre-line">{cleanAiExplanation}</p>
+            {(rawAiExplanation || cleanTechnicalReport) && (
+              <div className="space-y-2.5 text-[12px] min-[960px]:text-[13px] text-slate-700 leading-relaxed bg-white rounded-xl p-3 min-[960px]:p-3.5 border border-slate-100">
+                {rawAiExplanation && (
+                  <p className="whitespace-pre-line">{renderFormattedBoldText(rawAiExplanation)}</p>
                 )}
                 {showTechnicalReportSeparately && (
-                  <div className={cleanAiExplanation ? 'pt-2 border-t border-slate-100' : ''}>
-                    {cleanAiExplanation && (
+                  <div className={rawAiExplanation ? 'pt-2 border-t border-slate-100' : ''}>
+                    {rawAiExplanation && (
                       <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">
                         Registro Técnico da Bancada
                       </span>
@@ -672,7 +765,7 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
 
         {/* 5. PhotoEvidenceCard (Condicional + Lightbox) */}
         {validPhotos.length > 0 && (
-          <section className="bg-white rounded-[16px] shadow-[0_2px_10px_rgba(16,32,64,0.05)] p-4">
+          <section className="bg-white rounded-[16px] shadow-[0_2px_10px_rgba(16,32,64,0.05)] p-4 min-[960px]:p-5">
             <div className="flex items-center justify-between gap-2 mb-3">
               <h2 className="text-[14px] font-semibold text-[#102040]">
                 Fotos do Aparelho (Check-in &amp; Evidências)
@@ -682,7 +775,15 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
               </span>
             </div>
 
-            <div className="grid grid-cols-2 gap-2.5">
+            <div
+              className={`grid grid-cols-2 gap-2.5 min-[960px]:gap-3 ${
+                validPhotos.length >= 4
+                  ? 'min-[960px]:grid-cols-4'
+                  : validPhotos.length === 3
+                    ? 'min-[960px]:grid-cols-3'
+                    : 'min-[960px]:grid-cols-2'
+              }`}
+            >
               {validPhotos.map((ph, idx) => (
                 <button
                   key={ph.slot || idx}
@@ -708,9 +809,12 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
             </div>
           </section>
         )}
+          </div>
 
-        {/* 6. BudgetBreakdownCard */}
-        <section className="bg-white rounded-[16px] shadow-[0_2px_10px_rgba(16,32,64,0.05)] p-4">
+          {/* Coluna Direita (~42%, sticky no desktop): Orçamento, Condições e Assinatura */}
+          <div className="flex flex-col gap-3.5 min-[960px]:gap-4 min-[960px]:col-span-5 min-w-0 min-[960px]:sticky min-[960px]:top-6">
+            {/* 6. BudgetBreakdownCard */}
+            <section className="bg-white rounded-[16px] shadow-[0_2px_10px_rgba(16,32,64,0.05)] p-4 min-[960px]:p-5">
           <h2 className="text-[14px] font-semibold text-[#102040] mb-3">
             Valores Discriminados do Orçamento
           </h2>
@@ -917,16 +1021,17 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
               </button>
             </div>
 
-            <div className="bg-white border-2 border-dashed border-slate-300 rounded-xl overflow-hidden">
+            <div
+              ref={canvasWrapRef}
+              className="bg-white border-2 border-dashed border-slate-300 rounded-xl overflow-hidden w-full h-36 min-[960px]:h-40"
+            >
               <canvas
                 ref={canvasRef}
-                width={640}
-                height={220}
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
                 onPointerCancel={handlePointerUp}
-                className="w-full h-36 block touch-none cursor-crosshair bg-white"
+                className="w-full h-full block touch-none cursor-crosshair bg-white"
               />
             </div>
             <p className="text-center text-[11px] text-slate-400 mt-1.5">
@@ -965,6 +1070,8 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
             </button>
           </section>
         )}
+          </div>
+        </div>
 
         {/* 9. Footer */}
         <footer className="text-center py-2">
@@ -983,7 +1090,7 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
           onClick={() => setLightboxIndex(null)}
           className="fixed inset-0 z-50 bg-black/85 flex flex-col items-center justify-center p-4"
         >
-          <div className="w-full max-w-lg flex items-center justify-between mb-3">
+          <div className="w-full max-w-lg min-[960px]:max-w-3xl flex items-center justify-between mb-3">
             <span className="text-white/80 text-[11px] font-medium">
               {(lightboxIndex ?? 0) + 1} de {validPhotos.length}
             </span>
@@ -998,7 +1105,7 @@ export const PublicAcceptanceView: React.FC<PublicAcceptanceViewProps> = ({
           </div>
 
           <div
-            className="relative w-full max-w-lg flex items-center justify-center"
+            className="relative w-full max-w-lg min-[960px]:max-w-3xl flex items-center justify-center"
             onClick={(e) => e.stopPropagation()}
           >
             {validPhotos.length > 1 && (
