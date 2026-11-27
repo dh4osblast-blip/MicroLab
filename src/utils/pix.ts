@@ -29,7 +29,7 @@ function normalizePixText(value: string): string {
 }
 
 export function formatPixKeyForEmv(rawKey: string): string {
-  const trimmed = rawKey.trim();
+  const trimmed = String(rawKey || '').trim();
   if (!trimmed) return '';
 
   // Telefone brasileiro formatado com DDD entre parênteses -> +55DDDNUMERO
@@ -46,6 +46,7 @@ export interface BuildPixPayloadInput {
   merchant?: string;
   city?: string;
   amount?: number;
+  /** Ignorado na montagem do payload EMV (campo 62 sempre fixado em 62070503***). */
   txid?: string;
 }
 
@@ -54,9 +55,8 @@ export function buildPixPayload({
   merchant = 'MICROLAB ASSISTENCIA TEC',
   city = 'SALVADOR',
   amount = 0,
-  txid = '',
 }: BuildPixPayloadInput): string {
-  const formattedKey = formatPixKeyForEmv(pixKey);
+  const formattedKey = formatPixKeyForEmv(String(pixKey || '').trim());
   if (!formattedKey) return '';
 
   const merchantAccountInfo =
@@ -66,12 +66,6 @@ export function buildPixPayload({
     normalizePixText(merchant).slice(0, 25) || 'MICROLAB';
   const normalizedCity =
     normalizePixText(city).slice(0, 15) || 'SALVADOR';
-  const cleanTxid =
-    txid
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^A-Za-z0-9]/g, '')
-      .slice(0, 25) || '***';
 
   const validAmount = Number.isFinite(amount) && amount > 0 ? amount : 0;
 
@@ -85,7 +79,7 @@ export function buildPixPayload({
     tlv('58', 'BR') +
     tlv('59', normalizedMerchant) +
     tlv('60', normalizedCity) +
-    tlv('62', tlv('05', cleanTxid)) +
+    tlv('62', tlv('05', '***')) +
     '6304';
 
   return basePayload + crc16Ccitt(basePayload);

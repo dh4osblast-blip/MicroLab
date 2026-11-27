@@ -104,21 +104,24 @@ export const PixModal: React.FC<PixModalProps> = ({
   }, [isOpen, initialAmount, initialDescription]);
 
   const amountVal = Math.max(0, parseFloat(amountStr.replace(',', '.')) || 0);
+  const rawPixKey = (state.cfg.pixKey || state.labProfile.pixKey || '').trim();
+  const pixMerchant = state.cfg.pixNome || state.labProfile.pixMerchant;
+  const pixCity = state.cfg.pixCid || state.labProfile.pixCity || 'SALVADOR';
+
   const pixPayload = useMemo(
     () =>
       buildPixPayload({
-        pixKey: state.labProfile.pixKey,
-        merchant: state.labProfile.pixMerchant,
-        city: state.labProfile.pixCity || 'SALVADOR',
+        pixKey: rawPixKey,
+        merchant: pixMerchant,
+        city: pixCity,
         amount: amountVal,
-        txid: description,
       }),
-    [state.labProfile.pixKey, state.labProfile.pixMerchant, state.labProfile.pixCity, amountVal, description]
+    [rawPixKey, pixMerchant, pixCity, amountVal]
   );
 
   if (!isOpen) return null;
 
-  const formattedKey = formatPixKeyForEmv(state.labProfile.pixKey);
+  const formattedKey = formatPixKeyForEmv(rawPixKey);
 
   const handleCopy = async () => {
     if (!pixPayload) return;
@@ -134,12 +137,13 @@ export const PixModal: React.FC<PixModalProps> = ({
   const handleConfirmReceive = () => {
     if (amountVal <= 0) return;
     addTransaction({
-      title: description || 'Recebimento PIX Avulso',
+      title: description.trim() || 'Recebimento PIX Avulso',
       subtitle: 'PIX Banco Inter · Conciliado no Caixa',
       tag: 'PIX-INT',
       channel: 'PIX',
       type: 'in',
       amount: amountVal,
+      env: 'conta',
       reconciled: true,
     });
     setConfirmed(true);
@@ -192,12 +196,15 @@ export const PixModal: React.FC<PixModalProps> = ({
             />
           </div>
           <div>
-            <label className="block text-[11px] font-semibold text-[#414752] mb-1">Identificador / OS</label>
+            <label className="block text-[11px] font-semibold text-[#414752] mb-1">
+              Identificador / OS <span className="font-normal text-[#727784]">(ref. caixa)</span>
+            </label>
             <input
               type="text"
-              maxLength={25}
+              maxLength={80}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
+              placeholder="Descrição interna no caixa"
               className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs font-medium text-[#091b36] focus:outline-none focus:border-[#0056ab]"
             />
           </div>
@@ -209,7 +216,7 @@ export const PixModal: React.FC<PixModalProps> = ({
             {amountVal > 0 ? formatBRL(amountVal) : 'Valor livre no banco'}
           </p>
           <p className="text-[11px] text-[#727784] text-center">
-            {state.labProfile.pixMerchant} · {state.labProfile.pixCity || 'SALVADOR'}
+            {pixMerchant} · {pixCity}
           </p>
         </div>
 

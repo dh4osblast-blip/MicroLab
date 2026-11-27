@@ -182,11 +182,10 @@ export const PosView: React.FC = () => {
   const isCashMethod = effectivePaymentMethod.toLowerCase().includes('dinheiro');
 
   const pdvPixPayload = buildPixPayload({
-    pixKey: state.labProfile.pixKey,
-    merchant: state.labProfile.pixMerchant,
-    city: state.labProfile.pixCity || 'SALVADOR',
+    pixKey: (state.cfg.pixKey || state.labProfile.pixKey || '').trim(),
+    merchant: state.cfg.pixNome || state.labProfile.pixMerchant,
+    city: state.cfg.pixCid || state.labProfile.pixCity || 'SALVADOR',
     amount: total,
-    txid: `PDV${cart.length}`,
   });
 
   const handleCopyPdvPix = async () => {

@@ -68,13 +68,12 @@ export const OrderThermalReceipt: React.FC<OrderThermalReceiptProps> = ({
   const pixTargetAmount = saldo > 0.004 ? saldo : order.status !== 'Cancelado' && paid <= 0 ? total : 0;
 
   const pixPayload =
-    cfg.pixKey && pixTargetAmount > 0
+    (cfg.pixKey || '').trim() && pixTargetAmount > 0
       ? buildPixPayload({
-          pixKey: cfg.pixKey,
+          pixKey: (cfg.pixKey || '').trim(),
           merchant: cfg.pixNome || pixMerchant || 'MicroLab',
           city: cfg.pixCid || pixCity || 'SALVADOR',
           amount: pixTargetAmount,
-          txid: `OS${order.id}`,
         })
       : '';
 
@@ -329,13 +328,12 @@ export const PosThermalReceipt: React.FC<PosThermalReceiptProps> = ({
 
   const isPix = sale.forma.toLowerCase().includes('pix') && sale.st !== 'Estornada';
   const pixPayload =
-    isPix && cfg.pixKey && total > 0
+    isPix && (cfg.pixKey || '').trim() && total > 0
       ? buildPixPayload({
-          pixKey: cfg.pixKey,
+          pixKey: (cfg.pixKey || '').trim(),
           merchant: cfg.pixNome || pixMerchant || 'MicroLab',
           city: cfg.pixCid || pixCity || 'SALVADOR',
           amount: total,
-          txid: `PDV${sale.n}`,
         })
       : '';
 
