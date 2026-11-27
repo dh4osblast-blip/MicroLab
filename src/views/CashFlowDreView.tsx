@@ -22,7 +22,7 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import { CashTransaction } from '../types/lab';
+import { CashTransaction, TransactionEnvelope } from '../types/lab';
 import { formatBRL, useLabStore } from '../store/useLabStore';
 import {
   FinancePeriodKey,
@@ -39,6 +39,7 @@ import {
   diasAteIso,
   formatDateBR,
   isRefundOrReversalTx,
+  resolveTransactionEnvelope,
   resolveTransactionIsoDate,
   todayIsoLocal,
 } from '../utils/pricing';
@@ -78,6 +79,8 @@ export const CashFlowDreView: React.FC = () => {
     () => state.cfg.catDesp[0] || 'Outros'
   );
   const [txChannel, setTxChannel] = useState<CashTransaction['channel']>('PIX');
+  const [txEnv, setTxEnv] = useState<TransactionEnvelope>('conta');
+  const [txAporte, setTxAporte] = useState(false);
   const [txTitle, setTxTitle] = useState('');
   const [txAmount, setTxAmount] = useState('');
 
@@ -214,17 +217,18 @@ export const CashFlowDreView: React.FC = () => {
   const cobPct = Math.max(0, Math.min(100, Math.round(K.cob * 100)));
 
   const handleExportCsv = () => {
-    const header = 'ID,DataISO,Titulo,Subtitulo,Tag,Canal,Tipo,Valor,DataExibicao,Conciliado\n';
+    const header = 'ID,DataISO,Titulo,Subtitulo,Tag,Canal,Tipo,Valor,DataExibicao,Conciliado,Envelope,Aporte\n';
     const rows = K.filteredTxs
-      .map(
-        (t) =>
-          `"${t.id}","${resolveTransactionIsoDate(t)}","${t.title.replace(/"/g, '""')}","${t.subtitle.replace(
-            /"/g,
-            '""'
-          )}","${t.tag}","${t.channel}","${t.type === 'in' ? 'Entrada' : 'Saída'}",${t.amount.toFixed(2)},"${
-            t.dateLabel
-          }",${t.reconciled ? 'Sim' : 'Pendente'}`
-      )
+      .map((t) => {
+        const envLabel = resolveTransactionEnvelope(t) === 'porquinho' ? 'Porquinho Inter' : 'Conta Corrente Inter';
+        const aporteLabel = t.type === 'in' && t.aporte ? 'Sim' : 'Não';
+        return `"${t.id}","${resolveTransactionIsoDate(t)}","${t.title.replace(/"/g, '""')}","${t.subtitle.replace(
+          /"/g,
+          '""'
+        )}","${t.tag}","${t.channel}","${t.type === 'in' ? 'Entrada' : 'Saída'}",${t.amount.toFixed(2)},"${
+          t.dateLabel
+        }",${t.reconciled ? 'Sim' : 'Pendente'},"${envLabel}","${aporteLabel}"`;
+      })
       .join('\n');
     const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
@@ -233,6 +237,12 @@ export const CashFlowDreView: React.FC = () => {
     a.download = `microlab-financeiro-${period}-${todayIsoLocal()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const openNewTxModal = () => {
+    setTxEnv('conta');
+    setTxAporte(false);
+    setShowTxModal(true);
   };
 
   const handleCreateTx = (e: React.FormEvent) => {
@@ -247,20 +257,29 @@ export const CashFlowDreView: React.FC = () => {
       else if (txCategory === 'Aluguel' || txCategory === 'Internet') resolvedChannel = 'Fixo';
     }
 
+    const isAporte = txType === 'in' && txAporte;
+    const envSuffix = txEnv === 'porquinho' ? ' · Porquinho Inter' : '';
+
     addTransaction({
       title: txTitle.trim(),
-      subtitle: `${resolvedChannel} · ${txType === 'out' ? txCategory : 'Entrada manual'}`,
-      tag: txType === 'out' ? txCategory : 'ENTRADA',
+      subtitle: `${resolvedChannel} · ${
+        txType === 'out' ? txCategory : isAporte ? 'Aporte / Saldo inicial' : 'Entrada manual'
+      }${envSuffix}`,
+      tag: txType === 'out' ? txCategory : isAporte ? 'APORTE' : 'ENTRADA',
       channel: resolvedChannel,
       type: txType,
       amount: amt,
       isoDate: txDate || todayIsoLocal(),
       kind: txType === 'out' && txCategory === 'Garantia' ? 'gar' : undefined,
+      env: txEnv,
+      ...(isAporte ? { aporte: true } : {}),
       reconciled: true,
     });
     setShowTxModal(false);
     setTxTitle('');
     setTxAmount('');
+    setTxEnv('conta');
+    setTxAporte(false);
     setTxDate(todayIsoLocal());
   };
 
@@ -331,7 +350,7 @@ export const CashFlowDreView: React.FC = () => {
   const maxBarScale = Math.max(100, ...channelBreakdown.map((b) => Math.max(b.inflow, b.outflow)));
 
   const renderExpenseClassLabel = (tx: CashTransaction) => {
-    if (tx.type === 'in') return 'Entrada';
+    if (tx.type === 'in') return tx.aporte ? 'Aporte / Saldo inicial' : 'Entrada';
     if (isRefundOrReversalTx(tx)) return 'Estorno / Devolução';
     const cls = classifyExpenseTx(tx);
     if (cls === 'gar') return 'Garantia (Cofre)';
@@ -405,7 +424,7 @@ export const CashFlowDreView: React.FC = () => {
 
           <button
             type="button"
-            onClick={() => setShowTxModal(true)}
+            onClick={openNewTxModal}
             className="inline-flex items-center gap-1.5 rounded-xl bg-[#0056ab] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#1b6fd1] cursor-pointer whitespace-nowrap"
           >
             <Plus className="w-4 h-4" />
@@ -443,6 +462,10 @@ export const CashFlowDreView: React.FC = () => {
               </span>
               <span className="text-2xl sm:text-3xl font-bold tabular-nums">
                 {formatBRL(state.interBalances.operational)}
+              </span>
+              <span className="text-[11px] text-orange-100 block mt-0.5 tabular-nums">
+                Entradas Conta {formatBRL(kAll.cofre.contaIn)} − Saídas Conta {formatBRL(kAll.cofre.contaOut)} − Retido Porquinho{' '}
+                {formatBRL(kAll.cofre.acc + kAll.giroAcc)}
               </span>
               <span className="text-[11px] text-orange-100 block mt-0.5 tabular-nums">
                 Lucro Líquido Disponível (Caixa − Cofre Garantia):{' '}
@@ -550,7 +573,7 @@ export const CashFlowDreView: React.FC = () => {
                 {formatBRL(kAll.saldo3)}
               </p>
               <span className="text-[10px] text-[#727784] block mt-0.5 tabular-nums">
-                Abatido {formatBRL(kAll.usoFer)} em Ferramentas (mês: +{formatBRL(kMes.ret3)})
+                Retido {formatBRL(kAll.giroAcc)} − Abatido {formatBRL(kAll.ferPorquinho)} em Ferramentas (mês: +{formatBRL(kMes.ret3)})
               </span>
             </div>
 
@@ -566,6 +589,16 @@ export const CashFlowDreView: React.FC = () => {
               </span>
             </div>
           </div>
+
+          {(kAll.porquinhoManualIn > 0 || kAll.porquinhoOtherOut > 0) && (
+            <div className="rounded-xl bg-[#F3F6FB] border border-[#D9E0EC] px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#414752]">
+              <span>Movimentações manuais diretas no Porquinho Inter:</span>
+              <span className="font-semibold tabular-nums text-[#091b36]">
+                +{formatBRL(kAll.porquinhoManualIn)} aportes/entradas
+                {kAll.porquinhoOtherOut > 0 ? ` · −${formatBRL(kAll.porquinhoOtherOut)} outras saídas` : ''}
+              </span>
+            </div>
+          )}
 
           <div className="rounded-xl bg-[#EAF2FD]/70 border border-[#0056ab]/20 p-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
             <div>
@@ -610,6 +643,11 @@ export const CashFlowDreView: React.FC = () => {
           <div className="rounded-xl bg-[#F3F6FB] p-4 border border-[#D9E0EC] space-y-1.5">
             <span className="text-[11px] font-semibold text-[#727784] block">Faturamento Bruto Recebido</span>
             <span className="text-xl font-bold text-[#16A34A] tabular-nums block">{formatBRL(K.bruto)}</span>
+            {K.aportes > 0 && (
+              <span className="text-[11px] text-[#0056ab] font-medium block tabular-nums">
+                + {formatBRL(K.aportes)} em aportes / saldo inicial (fora do faturamento)
+              </span>
+            )}
             {K.dev > 0 && (
               <span className="text-[11px] text-[#D97706] font-medium block">
                 menos {formatBRL(K.dev)} de devoluções e estornos
@@ -1278,6 +1316,17 @@ export const CashFlowDreView: React.FC = () => {
                           <span className="px-1.5 py-0.5 rounded bg-[#EAF2FD] text-[#0056ab] text-[10px] font-semibold shrink-0">
                             {renderExpenseClassLabel(tx)}
                           </span>
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-semibold shrink-0 ${
+                              resolveTransactionEnvelope(tx) === 'porquinho'
+                                ? 'bg-[#DCFCE7] text-[#15803d]'
+                                : 'bg-[#FFF7E6] text-[#B45309]'
+                            }`}
+                          >
+                            {resolveTransactionEnvelope(tx) === 'porquinho'
+                              ? 'Porquinho Inter'
+                              : 'Conta Inter'}
+                          </span>
                         </div>
                         <p className="text-[11px] text-[#727784] truncate">
                           {formatDateBR(iso)} · {tx.subtitle}
@@ -1404,7 +1453,11 @@ export const CashFlowDreView: React.FC = () => {
             <div className="grid grid-cols-2 gap-2">
               <button
                 type="button"
-                onClick={() => setTxType('out')}
+                onClick={() => {
+                  setTxType('out');
+                  setTxAporte(false);
+                  if (txCategory === 'Garantia') setTxEnv('porquinho');
+                }}
                 className={`py-2 rounded-xl text-xs font-bold border cursor-pointer ${
                   txType === 'out'
                     ? 'bg-[#FEE2E2] border-[#DC2626] text-[#DC2626]'
@@ -1442,7 +1495,13 @@ export const CashFlowDreView: React.FC = () => {
                   <label className="block text-[11px] font-semibold text-[#414752] mb-1">Categoria</label>
                   <select
                     value={txCategory}
-                    onChange={(e) => setTxCategory(e.target.value)}
+                    onChange={(e) => {
+                      const nextCat = e.target.value;
+                      setTxCategory(nextCat);
+                      if (nextCat === 'Garantia') {
+                        setTxEnv('porquinho');
+                      }
+                    }}
                     className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs"
                   >
                     {(state.cfg.catDesp || ['Outros']).map((cat) => (
@@ -1468,12 +1527,44 @@ export const CashFlowDreView: React.FC = () => {
             </div>
 
             <div>
+              <label className="block text-[11px] font-semibold text-[#414752] mb-1">
+                Destino / Envelope
+              </label>
+              <select
+                value={txEnv}
+                onChange={(e) => setTxEnv(e.target.value as TransactionEnvelope)}
+                className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs font-medium text-[#091b36]"
+              >
+                <option value="conta">Conta Corrente Inter (Caixa / Peças)</option>
+                <option value="porquinho">Porquinho Inter — Reserva (Garantia &amp; Giro)</option>
+              </select>
+            </div>
+
+            {txType === 'in' && (
+              <label className="flex items-start gap-2 rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2.5 text-[11px] text-[#091b36] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={txAporte}
+                  onChange={(e) => setTxAporte(e.target.checked)}
+                  className="mt-0.5 rounded border-[#D9E0EC] text-[#0056ab] focus:ring-[#0056ab]"
+                />
+                <span>
+                  <strong>Aporte / Saldo inicial</strong> (não contar como faturamento de vendas/OS)
+                </span>
+              </label>
+            )}
+
+            <div>
               <label className="block text-[11px] font-semibold text-[#414752] mb-1">Descrição *</label>
               <input
                 required
                 value={txTitle}
                 onChange={(e) => setTxTitle(e.target.value)}
-                placeholder="Ex: Compra de Fluxo Amtech, Estação SMD..."
+                placeholder={
+                  txType === 'in'
+                    ? 'Ex: Saldo inicial Conta Inter, Aporte para reserva...'
+                    : 'Ex: Compra de Fluxo Amtech, Estação SMD...'
+                }
                 className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs"
               />
             </div>

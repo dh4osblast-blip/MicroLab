@@ -276,16 +276,14 @@ const reconcileDerivedFromCfg = (state: LabState): LabState => {
     priorityQueue: nextPriorityQueue,
   };
 
-  // Financeiro em 3 Camadas v17 (substitui qualquer rateio automático por transação)
+  // Financeiro em 3 Camadas v18 (Envelopes Conta Corrente Inter + Porquinho Inter)
   const kAll = calcFinLayers(updatedOrdersState, 'all');
   const eq = kAll.equilibrio;
   const cf = kAll.cofre;
   const garantiaBal = Math.round(cf.saldo * 100) / 100;
   const giroBal = Math.round(kAll.saldo3 * 100) / 100;
-  const porquinhoBal = Math.round((Math.max(0, garantiaBal) + Math.max(0, giroBal)) * 100) / 100;
-  const operationalBal =
-    Math.round((cf.totalCashBalance - Math.max(0, garantiaBal) - Math.max(0, giroBal)) * 100) /
-    100;
+  const porquinhoBal = Math.round(kAll.porquinhoTotal * 100) / 100;
+  const operationalBal = Math.round(kAll.operationalBalance * 100) / 100;
 
   return {
     ...updatedOrdersState,
@@ -3391,11 +3389,14 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const isoDate = txInput.isoDate || today;
     const timeStr = nowClockStr();
     const isGar = txInput.type === 'out' && normStr(txInput.tag) === 'garantia';
+    const resolvedEnv = txInput.env || (isGar ? 'porquinho' : 'conta');
     const newTx: CashTransaction = {
       ...txInput,
       id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       isoDate,
       kind: txInput.kind || (isGar ? 'gar' : undefined),
+      env: resolvedEnv,
+      ...(txInput.type === 'in' && txInput.aporte ? { aporte: true } : {}),
       dateLabel: isoDate === today ? `Hoje, ${timeStr}` : formatDateBR(isoDate),
       updatedAt: Date.now(),
     };
@@ -3443,6 +3444,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       isoDate,
       refOrderId: originOrder?.id,
       kind: 'gar',
+      env: 'porquinho',
       reconciled: true,
       updatedAt: Date.now(),
     };

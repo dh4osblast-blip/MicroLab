@@ -573,6 +573,8 @@ export interface PayableBill {
   updatedAt?: number;
 }
 
+export type TransactionEnvelope = 'conta' | 'porquinho';
+
 export interface CashTransaction {
   id: string;
   title: string;
@@ -588,6 +590,8 @@ export interface CashTransaction {
   purchaseId?: string;
   payableBillId?: string;
   kind?: 'sinal' | 'estSinal' | 'rec' | 'dev' | 'fixo' | 'venda' | 'compra' | 'gar' | 'pagar';
+  env?: TransactionEnvelope;
+  aporte?: boolean;
   reconciled: boolean;
   updatedAt?: number;
 }
