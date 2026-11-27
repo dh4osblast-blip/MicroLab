@@ -22,7 +22,7 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import { CashTransaction, TransactionEnvelope } from '../types/lab';
+import { CashTransaction, TransactionEnvelope, TransactionSubEnvelope } from '../types/lab';
 import { formatBRL, useLabStore } from '../store/useLabStore';
 import {
   FinancePeriodKey,
@@ -41,6 +41,7 @@ import {
   isRefundOrReversalTx,
   resolveTransactionEnvelope,
   resolveTransactionIsoDate,
+  resolveTransactionSubEnvelope,
   todayIsoLocal,
 } from '../utils/pricing';
 
@@ -80,6 +81,7 @@ export const CashFlowDreView: React.FC = () => {
   );
   const [txChannel, setTxChannel] = useState<CashTransaction['channel']>('PIX');
   const [txEnv, setTxEnv] = useState<TransactionEnvelope>('conta');
+  const [txSubEnv, setTxSubEnv] = useState<TransactionSubEnvelope>('giro');
   const [txAporte, setTxAporte] = useState(false);
   const [txTitle, setTxTitle] = useState('');
   const [txAmount, setTxAmount] = useState('');
@@ -220,7 +222,12 @@ export const CashFlowDreView: React.FC = () => {
     const header = 'ID,DataISO,Titulo,Subtitulo,Tag,Canal,Tipo,Valor,DataExibicao,Conciliado,Envelope,Aporte\n';
     const rows = K.filteredTxs
       .map((t) => {
-        const envLabel = resolveTransactionEnvelope(t) === 'porquinho' ? 'Porquinho Inter' : 'Conta Corrente Inter';
+        const envLabel =
+          resolveTransactionEnvelope(t) === 'porquinho'
+            ? resolveTransactionSubEnvelope(t) === 'garantia'
+              ? 'Porquinho Inter (Cofre Garantia)'
+              : 'Porquinho Inter (Capital de Giro)'
+            : 'Conta Corrente Inter';
         const aporteLabel = t.type === 'in' && t.aporte ? 'Sim' : 'Não';
         return `"${t.id}","${resolveTransactionIsoDate(t)}","${t.title.replace(/"/g, '""')}","${t.subtitle.replace(
           /"/g,
@@ -241,6 +248,7 @@ export const CashFlowDreView: React.FC = () => {
 
   const openNewTxModal = () => {
     setTxEnv('conta');
+    setTxSubEnv('giro');
     setTxAporte(false);
     setShowTxModal(true);
   };
@@ -258,7 +266,12 @@ export const CashFlowDreView: React.FC = () => {
     }
 
     const isAporte = txType === 'in' && txAporte;
-    const envSuffix = txEnv === 'porquinho' ? ' · Porquinho Inter' : '';
+    const envSuffix =
+      txEnv === 'porquinho'
+        ? txSubEnv === 'garantia'
+          ? ' · Porquinho (Cofre Garantia)'
+          : ' · Porquinho (Capital de Giro)'
+        : '';
 
     addTransaction({
       title: txTitle.trim(),
@@ -272,6 +285,7 @@ export const CashFlowDreView: React.FC = () => {
       isoDate: txDate || todayIsoLocal(),
       kind: txType === 'out' && txCategory === 'Garantia' ? 'gar' : undefined,
       env: txEnv,
+      ...(txEnv === 'porquinho' ? { subEnv: txSubEnv } : {}),
       ...(isAporte ? { aporte: true } : {}),
       reconciled: true,
     });
@@ -279,6 +293,7 @@ export const CashFlowDreView: React.FC = () => {
     setTxTitle('');
     setTxAmount('');
     setTxEnv('conta');
+    setTxSubEnv('giro');
     setTxAporte(false);
     setTxDate(todayIsoLocal());
   };
@@ -468,7 +483,7 @@ export const CashFlowDreView: React.FC = () => {
                 {formatBRL(kAll.cofre.acc + kAll.giroAcc)}
               </span>
               <span className="text-[11px] text-orange-100 block mt-0.5 tabular-nums">
-                Lucro Líquido Disponível (Caixa − Cofre Garantia):{' '}
+                Lucro Líquido Disponível (Caixa − Porquinho Inter):{' '}
                 <strong className="text-white">{formatBRL(kAll.disp)}</strong>
               </span>
             </div>
@@ -560,8 +575,9 @@ export const CashFlowDreView: React.FC = () => {
                 {formatBRL(kAll.saldo2)}
               </p>
               <span className="text-[10px] text-[#727784] block mt-0.5 tabular-nums">
-                Retido {formatBRL(kAll.cofre.acc)} − Gastos {formatBRL(kAll.cofre.gastos)} (mês:{' '}
-                {formatBRL(kMes.acc2)})
+                Retido {formatBRL(kAll.cofre.acc)}
+                {kAll.garManualIn > 0 ? ` + ${formatBRL(kAll.garManualIn)} aportes` : ''} − Gastos{' '}
+                {formatBRL(kAll.cofre.gastos)} (mês: {formatBRL(kMes.acc2 + kMes.acc2Manual)})
               </span>
             </div>
 
@@ -573,7 +589,9 @@ export const CashFlowDreView: React.FC = () => {
                 {formatBRL(kAll.saldo3)}
               </p>
               <span className="text-[10px] text-[#727784] block mt-0.5 tabular-nums">
-                Retido {formatBRL(kAll.giroAcc)} − Abatido {formatBRL(kAll.ferPorquinho)} em Ferramentas (mês: +{formatBRL(kMes.ret3)})
+                Retido {formatBRL(kAll.giroAcc)}
+                {kAll.giroManualIn > 0 ? ` + ${formatBRL(kAll.giroManualIn)} aportes` : ''} − Saídas{' '}
+                {formatBRL(kAll.giroOut)} (mês: +{formatBRL(kMes.ret3 + kMes.ret3Manual)})
               </span>
             </div>
 
@@ -714,7 +732,7 @@ export const CashFlowDreView: React.FC = () => {
             </div>
           </div>
           <div className="rounded-xl bg-[#EAF2FD] border border-[#0056ab]/25 px-3 py-1.5 text-xs">
-            <span className="text-[#414752]">Lucro Líquido Disponível (caixa − cofre garantia): </span>
+            <span className="text-[#414752]">Lucro Líquido Disponível (caixa − Porquinho Inter): </span>
             <strong className={`tabular-nums ${K.disp >= 0 ? 'text-[#0056ab]' : 'text-[#DC2626]'}`}>
               {formatBRL(K.disp)}
             </strong>
@@ -755,14 +773,16 @@ export const CashFlowDreView: React.FC = () => {
                 {formatBRL(K.saldo2)}
               </span>
               <p className="text-[10px] text-[#414752]">
-                Saldo acumulado: {formatBRL(K.cofre.acc)} retidos sobre {formatBRL(K.cofre.base)} −{' '}
-                {formatBRL(K.cofre.gastos)} gastos
+                Saldo acumulado: {formatBRL(K.cofre.acc)} retidos sobre {formatBRL(K.cofre.base)}
+                {K.garManualIn > 0 ? ` + ${formatBRL(K.garManualIn)} aportes` : ''} − {formatBRL(K.cofre.gastos)} gastos
               </p>
               <p className="text-[10px] text-[#727784]">
-                No período: retido {formatBRL(K.acc2)} · gastos de garantia {formatBRL(K.gastoGar)}
+                No período: retido {formatBRL(K.acc2)}
+                {K.acc2Manual > 0 ? ` + ${formatBRL(K.acc2Manual)} aportes` : ''} · gastos de garantia{' '}
+                {formatBRL(K.gastoGar)}
               </p>
               <p className="text-[10px] font-semibold text-[#0056ab]">
-                Caixa disponível após reserva: {formatBRL(K.disp)}
+                Caixa disponível após reservas (Conta Inter): {formatBRL(K.disp)}
               </p>
             </div>
             <button
@@ -788,10 +808,14 @@ export const CashFlowDreView: React.FC = () => {
                 {formatBRL(K.saldo3)}
               </span>
               <p className="text-[10px] text-[#414752]">
-                Saldo acumulado global (já abatidas compras na categoria Ferramentas).
+                Saldo acumulado: {formatBRL(K.giroAcc)} retidos
+                {K.giroManualIn > 0 ? ` + ${formatBRL(K.giroManualIn)} aportes` : ''} − {formatBRL(K.giroOut)} saídas
+                (Ferramentas/Giro).
               </p>
               <p className="text-[10px] text-[#727784]">
-                No período: retido {formatBRL(K.ret3)} · usado em ferramentas {formatBRL(K.usoFer)}
+                No período: retido {formatBRL(K.ret3)}
+                {K.ret3Manual > 0 ? ` + ${formatBRL(K.ret3Manual)} aportes` : ''} · usado em ferramentas/giro{' '}
+                {formatBRL(K.usoFer)}
               </p>
             </div>
             <div className="h-1.5 rounded-full bg-white overflow-hidden border border-[#D9E0EC]">
@@ -1324,7 +1348,9 @@ export const CashFlowDreView: React.FC = () => {
                             }`}
                           >
                             {resolveTransactionEnvelope(tx) === 'porquinho'
-                              ? 'Porquinho Inter'
+                              ? resolveTransactionSubEnvelope(tx) === 'garantia'
+                                ? 'Porquinho · Garantia'
+                                : 'Porquinho · Giro'
                               : 'Conta Inter'}
                           </span>
                         </div>
@@ -1456,7 +1482,10 @@ export const CashFlowDreView: React.FC = () => {
                 onClick={() => {
                   setTxType('out');
                   setTxAporte(false);
-                  if (txCategory === 'Garantia') setTxEnv('porquinho');
+                  if (txCategory === 'Garantia') {
+                    setTxEnv('porquinho');
+                    setTxSubEnv('garantia');
+                  }
                 }}
                 className={`py-2 rounded-xl text-xs font-bold border cursor-pointer ${
                   txType === 'out'
@@ -1500,6 +1529,9 @@ export const CashFlowDreView: React.FC = () => {
                       setTxCategory(nextCat);
                       if (nextCat === 'Garantia') {
                         setTxEnv('porquinho');
+                        setTxSubEnv('garantia');
+                      } else if (nextCat === 'Ferramentas' && txEnv === 'porquinho') {
+                        setTxSubEnv('giro');
                       }
                     }}
                     className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs"
@@ -1532,13 +1564,35 @@ export const CashFlowDreView: React.FC = () => {
               </label>
               <select
                 value={txEnv}
-                onChange={(e) => setTxEnv(e.target.value as TransactionEnvelope)}
+                onChange={(e) => {
+                  const nextEnv = e.target.value as TransactionEnvelope;
+                  setTxEnv(nextEnv);
+                  if (nextEnv === 'porquinho') {
+                    setTxSubEnv(txType === 'out' && txCategory === 'Garantia' ? 'garantia' : 'giro');
+                  }
+                }}
                 className="w-full rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2 text-xs font-medium text-[#091b36]"
               >
                 <option value="conta">Conta Corrente Inter (Caixa / Peças)</option>
                 <option value="porquinho">Porquinho Inter — Reserva (Garantia &amp; Giro)</option>
               </select>
             </div>
+
+            {txEnv === 'porquinho' && (
+              <div>
+                <label className="block text-[11px] font-semibold text-[#414752] mb-1">
+                  Subdestino no Porquinho Inter
+                </label>
+                <select
+                  value={txSubEnv}
+                  onChange={(e) => setTxSubEnv(e.target.value as TransactionSubEnvelope)}
+                  className="w-full rounded-xl border border-[#0056ab]/30 bg-[#EAF2FD]/70 px-3 py-2 text-xs font-medium text-[#091b36]"
+                >
+                  <option value="giro">Porquinho Inter — Capital de Giro (Envelope 3)</option>
+                  <option value="garantia">Porquinho Inter — Cofre de Garantia (Envelope 2)</option>
+                </select>
+              </div>
+            )}
 
             {txType === 'in' && (
               <label className="flex items-start gap-2 rounded-xl border border-[#D9E0EC] bg-[#F3F6FB] px-3 py-2.5 text-[11px] text-[#091b36] cursor-pointer">

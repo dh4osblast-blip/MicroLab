@@ -14,11 +14,12 @@ import {
   ServiceCatalogItem,
   ServiceOrder,
   TransactionEnvelope,
+  TransactionSubEnvelope,
 } from '../types/lab';
 
 // Official MicroLab Financial & Pricing Parameters
 
-export const APP_VERSION_TAG = 'v1.8 · Electron';
+export const APP_VERSION_TAG = 'v1.8.1 · Electron';
 export const OFFICIAL_WEEKLY_SCHEDULE = [4, 4, 4, 4, 4, 4, 2] as const; // Seg–Sáb 4h + Dom 2h = 26h/sem
 export const OFFICIAL_HOURS_BY_DOW = [2, 4, 4, 4, 4, 4, 4] as const; // Date.getDay() order: Dom..Sáb
 export const OFFICIAL_WEEKLY_HOURS = 26;
@@ -1271,89 +1272,123 @@ export function resolveTransactionEnvelope(
   return 'conta';
 }
 
+/**
+ * Resolve o subenvelope do Porquinho Inter (`'giro'` | `'garantia'`).
+ * Retrocompatível: lançamentos sem `subEnv` vão para `'garantia'` quando `kind === 'gar'` e `'giro'` nos demais casos.
+ */
+export function resolveTransactionSubEnvelope(
+  tx: Pick<CashTransaction, 'subEnv' | 'kind' | 'tag' | 'type' | 'channel' | 'id'>
+): TransactionSubEnvelope {
+  if (tx.subEnv === 'garantia' || tx.subEnv === 'giro') return tx.subEnv;
+  if (tx.kind === 'gar' || (tx.type === 'out' && classifyExpenseTx(tx) === 'gar')) {
+    return 'garantia';
+  }
+  return 'giro';
+}
+
 export interface CofreGarantiaResult {
   pct: number;
   base: number;
   acc: number;
+  garManualIn: number;
   gastos: number;
   saldo: number;
+  giroAcc: number;
+  giroManualIn: number;
+  giroOut: number;
+  giroSaldo: number;
   contaIn: number;
   contaOut: number;
   contaNet: number;
   porquinhoIn: number;
   porquinhoOut: number;
   porquinhoManualNet: number;
+  porquinhoTotal: number;
   totalCashBalance: number;
   disp: number;
 }
 
 /**
- * `cofre()` v18: Cofre global da Reserva de Garantia sobre OS entregues menos saídas k='gar' do Porquinho.
- * Particiona os lançamentos entre Conta Corrente Inter (`env === 'conta'`) e Porquinho Inter (`env === 'porquinho'`).
- * Lucro Líquido Disponível (`disp`) = saldo total de caixa − saldo da reserva de garantia (sem dupla contagem).
+ * `cofre()` v18.1: Cofre global da Reserva de Garantia + Capital de Giro no Porquinho Inter.
+ * Particiona os lançamentos entre Conta Corrente Inter (`env === 'conta'`) e Porquinho Inter (`env === 'porquinho'`,
+ * subdividido entre Envelope 2 `subEnv === 'garantia'` e Envelope 3 `subEnv === 'giro'`).
+ * Lucro Líquido Disponível (`disp`) = caixa total − total alocado no Porquinho Inter (saldo livre na Conta Corrente).
  */
 export function calcCofreReservaGarantia(
   orders: ServiceOrder[],
   transactions: CashTransaction[],
-  cfg: Pick<LabConfig, 'reservaGar'>
+  cfg: Pick<LabConfig, 'reservaGar'> & Partial<Pick<LabConfig, 'reservaCap'>>
 ): CofreGarantiaResult {
   const pct = Math.max(0, (Number(cfg.reservaGar) || 0) * 100);
+  const pGiro = Math.max(0, Number(cfg.reservaCap) || 0);
   const base = round2(
     (orders || [])
       .filter((o) => o.status === 'Entregue')
       .reduce((sum, o) => sum + resolveOrderBaseRec(o), 0)
   );
   const acc = Math.round(base * pct) / 100;
+  const giroAcc = round2(base * pGiro);
   const txs = transactions || [];
-  const gastos = round2(
-    txs
-      .filter(
-        (tx) =>
-          tx.type === 'out' &&
-          !isRefundOrReversalTx(tx) &&
-          resolveTransactionEnvelope(tx) === 'porquinho' &&
-          classifyExpenseTx(tx) === 'gar'
-      )
-      .reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0)
-  );
 
   let contaIn = 0;
   let contaOut = 0;
-  let porquinhoIn = 0;
-  let porquinhoOut = 0;
+  let garManualIn = 0;
+  let garOut = 0;
+  let giroManualIn = 0;
+  let giroOut = 0;
   txs.forEach((tx) => {
     const amt = Number(tx.amount) || 0;
     const env = resolveTransactionEnvelope(tx);
-    if (tx.type === 'in') {
-      if (env === 'porquinho') porquinhoIn += amt;
-      else contaIn += amt;
+    if (env === 'porquinho') {
+      const sub = resolveTransactionSubEnvelope(tx);
+      if (tx.type === 'in') {
+        if (sub === 'garantia') garManualIn += amt;
+        else giroManualIn += amt;
+      } else if (tx.type === 'out') {
+        if (sub === 'garantia') garOut += amt;
+        else giroOut += amt;
+      }
+    } else if (tx.type === 'in') {
+      contaIn += amt;
     } else if (tx.type === 'out') {
-      if (env === 'porquinho') porquinhoOut += amt;
-      else contaOut += amt;
+      contaOut += amt;
     }
   });
+
   contaIn = round2(contaIn);
   contaOut = round2(contaOut);
   const contaNet = round2(contaIn - contaOut);
-  porquinhoIn = round2(porquinhoIn);
-  porquinhoOut = round2(porquinhoOut);
+  garManualIn = round2(garManualIn);
+  const gastos = round2(garOut);
+  giroManualIn = round2(giroManualIn);
+  giroOut = round2(giroOut);
+  const porquinhoIn = round2(garManualIn + giroManualIn);
+  const porquinhoOut = round2(gastos + giroOut);
   const porquinhoManualNet = round2(porquinhoIn - porquinhoOut);
 
   const totalCashBalance = round2(contaNet + porquinhoManualNet);
-  const saldo = round2(acc - gastos);
-  const disp = round2(totalCashBalance - saldo);
+  const saldo = round2(acc + garManualIn - gastos);
+  const giroSaldo = round2(giroAcc + giroManualIn - giroOut);
+  const porquinhoTotal = round2(saldo + giroSaldo);
+  const disp = round2(totalCashBalance - porquinhoTotal);
   return {
     pct,
     base,
     acc,
+    garManualIn,
     gastos,
     saldo,
+    giroAcc,
+    giroManualIn,
+    giroOut,
+    giroSaldo,
     contaIn,
     contaOut,
     contaNet,
     porquinhoIn,
     porquinhoOut,
     porquinhoManualNet,
+    porquinhoTotal,
     totalCashBalance,
     disp,
   };
@@ -1508,10 +1543,15 @@ export interface FinLayersResult {
   prol: number;
   tPag: number;
   acc2: number;
+  acc2Manual: number;
   ret3: number;
+  ret3Manual: number;
   gastoGar: number;
   usoFer: number;
   giroAcc: number;
+  garManualIn: number;
+  giroManualIn: number;
+  giroOut: number;
   ferPorquinho: number;
   porquinhoManualIn: number;
   porquinhoManualOut: number;
@@ -1535,9 +1575,9 @@ export interface FinLayersResult {
 }
 
 /**
- * `finCalc()` v18: Motor financeiro completo em 3 camadas + Envelopes Inter direcionáveis:
+ * `finCalc()` v18.1: Motor financeiro completo em 3 camadas + Envelopes Inter direcionáveis com subdestino:
  * Camada 1 = Fluxo Operacional de Caixa (pela data do lançamento; `aporte: true` não infla o faturamento)
- * Camada 2 = Envelopes Carimbados & Cofre de Garantia (OS entregues no período + acumulado global + aportes/saídas manuais no Porquinho)
+ * Camada 2 = Envelopes Carimbados & Cofre de Garantia (OS entregues + aportes/saídas manuais nos subenvelopes Garantia/Giro)
  * Camada 3 = Resultado Real (após pró-labore e envelopes) & Termômetro de Equilíbrio
  */
 export function calcFinLayers(
@@ -1609,42 +1649,43 @@ export function calcFinLayers(
 
   const tPag = round2(Rp * pPag);
   const acc2 = round2(Rp * pGar);
+  const acc2Manual = round2(
+    En.filter(
+      (tx) =>
+        resolveTransactionEnvelope(tx) === 'porquinho' &&
+        resolveTransactionSubEnvelope(tx) === 'garantia'
+    ).reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0)
+  );
   const ret3 = round2(Rp * pGiro);
+  const ret3Manual = round2(
+    En.filter(
+      (tx) =>
+        resolveTransactionEnvelope(tx) === 'porquinho' &&
+        resolveTransactionSubEnvelope(tx) !== 'garantia'
+    ).reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0)
+  );
   const gastoGar = round2(
     Sa.filter(
       (tx) =>
-        !isRefundOrReversalTx(tx) &&
         resolveTransactionEnvelope(tx) === 'porquinho' &&
-        classifyExpenseTx(tx) === 'gar'
+        resolveTransactionSubEnvelope(tx) === 'garantia'
     ).reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0)
   );
   const usoFer = round2(
     Sa.filter(
       (tx) =>
-        !isRefundOrReversalTx(tx) &&
         resolveTransactionEnvelope(tx) === 'porquinho' &&
-        classifyExpenseTx(tx) === 'fer'
+        resolveTransactionSubEnvelope(tx) !== 'garantia'
     ).reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0)
   );
 
-  const allDelivered = (orders || []).filter((o) => o.status === 'Entregue');
-  const giroAcc = round2(
-    allDelivered.reduce((sum, o) => sum + resolveOrderBaseRec(o), 0) * pGiro
-  );
-  const ferPorquinho = round2(
-    (transactions || [])
-      .filter(
-        (tx) =>
-          tx.type === 'out' &&
-          !isRefundOrReversalTx(tx) &&
-          resolveTransactionEnvelope(tx) === 'porquinho' &&
-          classifyExpenseTx(tx) === 'fer'
-      )
-      .reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0)
-  );
-  const saldo3 = round2(giroAcc - ferPorquinho);
-
   const cofre = calcCofreReservaGarantia(orders, transactions, cfg);
+  const giroAcc = cofre.giroAcc;
+  const garManualIn = cofre.garManualIn;
+  const giroManualIn = cofre.giroManualIn;
+  const giroOut = cofre.giroOut;
+  const ferPorquinho = giroOut;
+  const saldo3 = cofre.giroSaldo;
   const porquinhoManualIn = cofre.porquinhoIn;
   const porquinhoManualOut = cofre.porquinhoOut;
   const porquinhoOtherOut = round2(
@@ -1657,8 +1698,8 @@ export function calcFinLayers(
       })
       .reduce((sum, tx) => sum + (Number(tx.amount) || 0), 0)
   );
-  const porquinhoTotal = round2(cofre.acc + giroAcc + porquinhoManualIn - porquinhoManualOut);
-  const operationalBalance = round2(cofre.contaNet - cofre.acc - giroAcc);
+  const porquinhoTotal = cofre.porquinhoTotal;
+  const operationalBalance = cofre.disp;
 
   const lucro = round2(Rp - env1 - tPag - (D.est + D.out) - prol - acc2 - ret3);
 
@@ -1686,10 +1727,15 @@ export function calcFinLayers(
     prol,
     tPag,
     acc2,
+    acc2Manual,
     ret3,
+    ret3Manual,
     gastoGar,
     usoFer,
     giroAcc,
+    garManualIn,
+    giroManualIn,
+    giroOut,
     ferPorquinho,
     porquinhoManualIn,
     porquinhoManualOut,

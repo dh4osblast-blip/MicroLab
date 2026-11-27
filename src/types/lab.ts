@@ -574,6 +574,7 @@ export interface PayableBill {
 }
 
 export type TransactionEnvelope = 'conta' | 'porquinho';
+export type TransactionSubEnvelope = 'giro' | 'garantia';
 
 export interface CashTransaction {
   id: string;
@@ -591,6 +592,7 @@ export interface CashTransaction {
   payableBillId?: string;
   kind?: 'sinal' | 'estSinal' | 'rec' | 'dev' | 'fixo' | 'venda' | 'compra' | 'gar' | 'pagar';
   env?: TransactionEnvelope;
+  subEnv?: TransactionSubEnvelope;
   aporte?: boolean;
   reconciled: boolean;
   updatedAt?: number;

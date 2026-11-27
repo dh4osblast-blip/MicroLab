@@ -3390,12 +3390,17 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const timeStr = nowClockStr();
     const isGar = txInput.type === 'out' && normStr(txInput.tag) === 'garantia';
     const resolvedEnv = txInput.env || (isGar ? 'porquinho' : 'conta');
+    const resolvedSubEnv =
+      resolvedEnv === 'porquinho'
+        ? txInput.subEnv || (isGar || txInput.kind === 'gar' ? 'garantia' : 'giro')
+        : undefined;
     const newTx: CashTransaction = {
       ...txInput,
       id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       isoDate,
       kind: txInput.kind || (isGar ? 'gar' : undefined),
       env: resolvedEnv,
+      ...(resolvedSubEnv ? { subEnv: resolvedSubEnv } : { subEnv: undefined }),
       ...(txInput.type === 'in' && txInput.aporte ? { aporte: true } : {}),
       dateLabel: isoDate === today ? `Hoje, ${timeStr}` : formatDateBR(isoDate),
       updatedAt: Date.now(),
@@ -3445,6 +3450,7 @@ export const LabProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       refOrderId: originOrder?.id,
       kind: 'gar',
       env: 'porquinho',
+      subEnv: 'garantia',
       reconciled: true,
       updatedAt: Date.now(),
     };
